@@ -16,6 +16,7 @@ from src.data_loader import load_unit_file, list_available_unit_files
 from src.data_transformer import aplicar_regras_operacionais, transform_base
 from src.engine import (
     build_kpis,
+    calcular_janelas_entrega,
     calcular_medianas_por_cliente,
     exportar_excel,
     exportar_zip_csv,
@@ -48,6 +49,7 @@ def processar_base(
     minimo_apontamentos: int,
     tempo_padrao_poucos_apontamentos: int,
     ajuste_percentual: float,
+    cobertura_janela: int,
 ) -> dict:
     base_bruta = load_unit_file(unidade)
 
@@ -69,6 +71,7 @@ def processar_base(
             "expurgados": pd.DataFrame(),
             "anomalias": pd.DataFrame(),
             "medianas": pd.DataFrame(),
+            "janelas": pd.DataFrame(),
             "kpis": {},
         }
 
@@ -86,6 +89,12 @@ def processar_base(
         minimo_apontamentos=minimo_apontamentos,
         tempo_padrao_poucos_apontamentos=tempo_padrao_poucos_apontamentos,
         ajuste_percentual=ajuste_percentual,
+    )
+
+    janelas = calcular_janelas_entrega(
+        df=processados,
+        cobertura_janela=float(cobertura_janela) / 100.0,
+        minimo_apontamentos=minimo_apontamentos,
     )
 
     kpis = build_kpis(
@@ -107,6 +116,7 @@ def processar_base(
         "expurgados": expurgados,
         "anomalias": anomalias,
         "medianas": medianas,
+        "janelas": janelas,
         "kpis": kpis,
     }
 
@@ -148,9 +158,9 @@ def normalizar_numero_texto(value) -> float | None:
     if texto == "" or texto.lower() in {"nan", "none", "<na>"}:
         return None
 
-    texto = texto.replace("\xa0", "")
+    texto = texto.replace("\\xa0", "")
     texto = texto.replace(" ", "")
-    texto = re.sub(r"[^0-9,.\-]", "", texto)
+    texto = re.sub(r"[^0-9,.\\-]", "", texto)
 
     if texto in {"", "-", ".", ","}:
         return None
@@ -373,6 +383,7 @@ def preparar_zip_download(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas: pd.DataFrame,
 ) -> bytes:
     return exportar_zip_csv(
         base_bruta=base_padronizada,
@@ -381,6 +392,7 @@ def preparar_zip_download(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        janelas=janelas,
     ).getvalue()
 
 
@@ -391,6 +403,7 @@ def preparar_excel_download(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas: pd.DataFrame,
 ) -> bytes:
     return exportar_excel(
         base_bruta=base_padronizada,
@@ -399,6 +412,7 @@ def preparar_excel_download(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        janelas=janelas,
     ).getvalue()
 
 
@@ -469,6 +483,14 @@ def main() -> None:
                 step=1,
             )
 
+            cobertura_janela = st.slider(
+                "Cobertura da janela (%)",
+                min_value=50,
+                max_value=95,
+                value=80,
+                step=5,
+            )
+
             processar = st.form_submit_button("Processar base", use_container_width=True)
 
     assinatura_atual = {
@@ -479,6 +501,7 @@ def main() -> None:
         "minimo_apontamentos": minimo_apontamentos,
         "tempo_padrao_poucos_apontamentos": tempo_padrao_poucos_apontamentos,
         "ajuste_percentual": ajuste_percentual,
+        "cobertura_janela": cobertura_janela,
     }
 
     if processar:
@@ -487,8 +510,16 @@ def main() -> None:
         st.session_state.pop("excel_bytes", None)
         st.session_state.pop("zip_bytes", None)
 
-    tab_base, tab_validacao, tab_processamento, tab_cliente, tab_resultados, tab_exportacao = st.tabs(
-        ["Base", "Validação", "Processamento", "Painel do Cliente", "Resultados", "Exportação"]
+    (
+        tab_base,
+        tab_validacao,
+        tab_processamento,
+        tab_cliente,
+        tab_janelas,
+        tab_resultados,
+        tab_exportacao,
+    ) = st.tabs(
+        ["Base", "Validação", "Processamento", "Painel do Cliente", "Janelas de Entrega", "Resultados", "Exportação"]
     )
 
     if "assinatura_processamento" not in st.session_state:
@@ -515,6 +546,7 @@ def main() -> None:
     expurgados = dados_processados["expurgados"]
     anomalias = dados_processados["anomalias"]
     medianas = dados_processados["medianas"]
+    janelas = dados_processados["janelas"]
     kpis = dados_processados["kpis"]
 
     with tab_base:
@@ -614,6 +646,7 @@ def main() -> None:
                 "anomalias": kpis.get("anomalias", 0),
                 "clientes_unicos": kpis.get("clientes_unicos", 0),
                 "mediana_global": kpis.get("mediana_global_fmt", "00:00:00"),
+                "cobertura_janela": f"{assinatura_atual['cobertura_janela']}%",
             }
         )
 
@@ -721,8 +754,54 @@ def main() -> None:
 
                     st.dataframe(exibicao_cliente, use_container_width=True, height=360)
 
+    with tab_janelas:
+        st.subheader("Análise de janela de entrega")
+
+        if janelas is None or janelas.empty:
+            st.info("Não há dados suficientes para calcular janelas de entrega.")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Clientes com janela", len(janelas))
+            col2.metric("Cobertura alvo", janelas["Cobertura_Alvo"].iloc[0])
+            col3.metric("Cruzam meia-noite", int((janelas["Cruza_MeiaNoite"] == "Sim").sum()))
+            col4.metric("Amplitude média (h)", formatar_numero(janelas["Amplitude_Horas"].mean(), 2))
+
+            st.caption(
+                "Ji é o início provável da janela e Jf é o fim provável, calculados por percentis dos horários reais."
+            )
+
+            cliente_janela = st.selectbox(
+                "Cliente para inspeção da janela",
+                options=janelas["Cod_Cliente"].astype(str).tolist(),
+                key="cliente_janela_selecionado",
+            )
+
+            detalhe_janela = janelas[janelas["Cod_Cliente"].astype(str) == str(cliente_janela)].copy()
+            if not detalhe_janela.empty:
+                detalhe = detalhe_janela.iloc[0]
+                st.write(
+                    {
+                        "cliente": str(detalhe["Cod_Cliente"]),
+                        "ji": detalhe["Ji"],
+                        "jf": detalhe["Jf"],
+                        "periodo": detalhe["Periodo"],
+                        "cruza_meia_noite": detalhe["Cruza_MeiaNoite"],
+                        "amplitude_horas": detalhe["Amplitude_Horas"],
+                        "n_entregas": int(detalhe["N_Entregas"]),
+                        "metodo": detalhe["Metodo_Janela"],
+                    }
+                )
+
+            exibir_preview_df(
+                janelas,
+                "Tabela de janelas de entrega",
+                limite=5000,
+                height=420,
+            )
+
     with tab_resultados:
         exibir_preview_df(medianas, "Medianas por cliente", limite=1000, height=320)
+        exibir_preview_df(janelas, "Janelas por cliente", limite=1000, height=320)
         exibir_preview_df(inconsistencias, "Inconsistências", limite=1000, height=240)
         exibir_preview_df(expurgados, "Expurgados", limite=1000, height=240)
         exibir_preview_df(anomalias, "Anomalias", limite=1000, height=240)
@@ -743,6 +822,7 @@ def main() -> None:
                         expurgados=expurgados,
                         anomalias=anomalias,
                         medianas=medianas,
+                        janelas=janelas,
                     )
 
             if "zip_bytes" in st.session_state:
@@ -764,6 +844,7 @@ def main() -> None:
                         expurgados=expurgados,
                         anomalias=anomalias,
                         medianas=medianas,
+                        janelas=janelas,
                     )
 
             if "excel_bytes" in st.session_state:
