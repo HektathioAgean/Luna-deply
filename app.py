@@ -127,6 +127,15 @@ def formatar_numero(value: float | int | None, casas: int = 2) -> str:
     return f"{float(value):,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def formatar_minutos_dia(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "00:00"
+    total = int(round(float(value))) % (24 * 60)
+    horas = total // 60
+    minutos = total % 60
+    return f"{horas:02d}:{minutos:02d}"
+
+
 def obter_coluna_volume(df: pd.DataFrame) -> str | None:
     candidatos = [
         "Vol_caixas",
@@ -271,6 +280,83 @@ def montar_dados_cliente(
     return dados_cliente, resumo
 
 
+@st.cache_data(show_spinner=False)
+def montar_dados_janela_cliente(
+    processados: pd.DataFrame,
+    janelas: pd.DataFrame,
+    cliente: str,
+) -> tuple[pd.DataFrame, dict]:
+    if processados is None or processados.empty or janelas is None or janelas.empty:
+        return pd.DataFrame(), {}
+
+    janela_cliente = janelas[janelas["Cod_Cliente"].astype(str) == str(cliente)].copy()
+    if janela_cliente.empty:
+        return pd.DataFrame(), {}
+
+    dados = processados[processados["Cod_Cliente"].astype(str) == str(cliente)].copy()
+    if dados.empty:
+        return pd.DataFrame(), {}
+
+    dados = dados.sort_values(by="Chegou_em").reset_index(drop=True)
+    detalhe = janela_cliente.iloc[0]
+
+    dados["Chegada_Min_Dia"] = (
+        dados["Chegou_em"].dt.hour * 60
+        + dados["Chegou_em"].dt.minute
+        + (dados["Chegou_em"].dt.second / 60.0)
+    )
+    dados["Finalizacao_Min_Dia"] = (
+        dados["Finalizada_em"].dt.hour * 60
+        + dados["Finalizada_em"].dt.minute
+        + (dados["Finalizada_em"].dt.second / 60.0)
+    )
+
+    ji_min = float(detalhe["Ji_Minutos"])
+    jf_min = float(detalhe["Jf_Minutos"])
+    cruza = str(detalhe["Cruza_MeiaNoite"]) == "Sim"
+
+    if cruza:
+        dados["Chegada_Min_Plot"] = dados["Chegada_Min_Dia"].where(dados["Chegada_Min_Dia"] >= 720, dados["Chegada_Min_Dia"] + 1440)
+        dados["Finalizacao_Min_Plot"] = dados["Finalizacao_Min_Dia"].where(dados["Finalizacao_Min_Dia"] >= 720, dados["Finalizacao_Min_Dia"] + 1440)
+        ji_plot = ji_min if ji_min >= 720 else ji_min + 1440
+        jf_plot = jf_min if jf_min >= 720 else jf_min + 1440
+    else:
+        dados["Chegada_Min_Plot"] = dados["Chegada_Min_Dia"]
+        dados["Finalizacao_Min_Plot"] = dados["Finalizacao_Min_Dia"]
+        ji_plot = ji_min
+        jf_plot = jf_min
+
+    def dentro_janela(valor_min: float) -> str:
+        if cruza:
+            return "Sim" if (valor_min >= ji_min or valor_min <= jf_min) else "Não"
+        return "Sim" if (ji_min <= valor_min <= jf_min) else "Não"
+
+    dados["Dentro_Janela_Chegada"] = dados["Chegada_Min_Dia"].apply(dentro_janela)
+    dados["Dentro_Janela_Finalizacao"] = dados["Finalizacao_Min_Dia"].apply(dentro_janela)
+    dados["Chegada_HHMM"] = dados["Chegou_em"].dt.strftime("%H:%M")
+    dados["Finalizacao_HHMM"] = dados["Finalizada_em"].dt.strftime("%H:%M")
+    dados["Data_Entrega"] = dados["Chegou_em"].dt.strftime("%d/%m/%Y")
+    dados["DataHora_Chegada"] = dados["Chegou_em"].dt.strftime("%d/%m/%Y %H:%M")
+    dados["DataHora_Finalizacao"] = dados["Finalizada_em"].dt.strftime("%d/%m/%Y %H:%M")
+
+    resumo = {
+        "cliente": str(cliente),
+        "ji": str(detalhe["Ji"]),
+        "jf": str(detalhe["Jf"]),
+        "ji_plot": ji_plot,
+        "jf_plot": jf_plot,
+        "cruza_meia_noite": str(detalhe["Cruza_MeiaNoite"]),
+        "periodo": str(detalhe["Periodo"]),
+        "amplitude_horas": float(detalhe["Amplitude_Horas"]),
+        "n_entregas": int(detalhe["N_Entregas"]),
+        "cobertura_alvo": str(detalhe["Cobertura_Alvo"]),
+        "qtd_chegadas_dentro": int((dados["Dentro_Janela_Chegada"] == "Sim").sum()),
+        "qtd_finalizacoes_dentro": int((dados["Dentro_Janela_Finalizacao"] == "Sim").sum()),
+    }
+
+    return dados, resumo
+
+
 def criar_grafico_cliente(
     dados_cliente: pd.DataFrame,
     resumo: dict,
@@ -355,6 +441,75 @@ def criar_grafico_cliente(
             overlaying="y",
             side="right",
             rangemode="tozero",
+        ),
+    )
+
+    return fig
+
+
+def criar_grafico_janela_cliente(
+    dados_cliente: pd.DataFrame,
+    resumo: dict,
+) -> go.Figure:
+    fig = go.Figure()
+
+    fig.add_hrect(
+        y0=resumo["ji_plot"],
+        y1=resumo["jf_plot"],
+        line_width=0,
+        opacity=0.20,
+        annotation_text=f"Janela {resumo['ji']} - {resumo['jf']}",
+        annotation_position="top left",
+    )
+
+    fig.add_scatter(
+        x=dados_cliente["Chegou_em"],
+        y=dados_cliente["Chegada_Min_Plot"],
+        mode="markers",
+        name="Chegada",
+        customdata=dados_cliente[["DataHora_Chegada", "Chegada_HHMM", "Dentro_Janela_Chegada"]].values,
+        hovertemplate=(
+            "<b>Chegada</b><br>"
+            "Data/Hora: %{customdata[0]}<br>"
+            "Horário: %{customdata[1]}<br>"
+            "Dentro da janela: %{customdata[2]}<extra></extra>"
+        ),
+    )
+
+    fig.add_scatter(
+        x=dados_cliente["Finalizada_em"],
+        y=dados_cliente["Finalizacao_Min_Plot"],
+        mode="markers",
+        name="Finalização",
+        customdata=dados_cliente[["DataHora_Finalizacao", "Finalizacao_HHMM", "Dentro_Janela_Finalizacao"]].values,
+        hovertemplate=(
+            "<b>Finalização</b><br>"
+            "Data/Hora: %{customdata[0]}<br>"
+            "Horário: %{customdata[1]}<br>"
+            "Dentro da janela: %{customdata[2]}<extra></extra>"
+        ),
+    )
+
+    y_min = min(resumo["ji_plot"], dados_cliente["Chegada_Min_Plot"].min(), dados_cliente["Finalizacao_Min_Plot"].min()) - 60
+    y_max = max(resumo["jf_plot"], dados_cliente["Chegada_Min_Plot"].max(), dados_cliente["Finalizacao_Min_Plot"].max()) + 60
+
+    tick_inicio = int(max(0, (y_min // 60) * 60))
+    tick_fim = int(((y_max // 60) + 1) * 60)
+    tick_vals = list(range(tick_inicio, tick_fim + 1, 60))
+    tick_text = [formatar_minutos_dia(v) for v in tick_vals]
+
+    fig.update_layout(
+        height=620,
+        hovermode="closest",
+        margin=dict(l=30, r=30, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(title="Data da entrega", rangeslider=dict(visible=True)),
+        yaxis=dict(
+            title="Horário do dia",
+            tickmode="array",
+            tickvals=tick_vals,
+            ticktext=tick_text,
+            range=[y_min, y_max],
         ),
     )
 
@@ -791,6 +946,50 @@ def main() -> None:
                         "metodo": detalhe["Metodo_Janela"],
                     }
                 )
+
+            dados_janela_cliente, resumo_janela_cliente = montar_dados_janela_cliente(
+                processados=processados,
+                janelas=janelas,
+                cliente=cliente_janela,
+            )
+
+            if not dados_janela_cliente.empty:
+                col_a, col_b, col_c, col_d = st.columns(4)
+                col_a.metric("Ji", resumo_janela_cliente["ji"])
+                col_b.metric("Jf", resumo_janela_cliente["jf"])
+                col_c.metric(
+                    "Chegadas dentro",
+                    f"{resumo_janela_cliente['qtd_chegadas_dentro']}/{resumo_janela_cliente['n_entregas']}",
+                )
+                col_d.metric(
+                    "Finalizações dentro",
+                    f"{resumo_janela_cliente['qtd_finalizacoes_dentro']}/{resumo_janela_cliente['n_entregas']}",
+                )
+
+                grafico_janela = criar_grafico_janela_cliente(
+                    dados_cliente=dados_janela_cliente,
+                    resumo=resumo_janela_cliente,
+                )
+                st.plotly_chart(grafico_janela, use_container_width=True)
+
+                tabela_janela = dados_janela_cliente[
+                    [
+                        "Data_Entrega",
+                        "Chegada_HHMM",
+                        "Finalizacao_HHMM",
+                        "Dentro_Janela_Chegada",
+                        "Dentro_Janela_Finalizacao",
+                    ]
+                ].rename(
+                    columns={
+                        "Data_Entrega": "Data",
+                        "Chegada_HHMM": "Chegada",
+                        "Finalizacao_HHMM": "Finalização",
+                        "Dentro_Janela_Chegada": "Chegada dentro da janela",
+                        "Dentro_Janela_Finalizacao": "Finalização dentro da janela",
+                    }
+                )
+                st.dataframe(tabela_janela, use_container_width=True, height=320)
 
             exibir_preview_df(
                 janelas,
