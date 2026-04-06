@@ -17,13 +17,7 @@ if str(BASE_DIR) not in sys.path:
 from config import APP_TITLE, AVAILABLE_UNITS, LAYOUT
 from src.data_loader import load_unit_file, list_available_unit_files
 from src.data_transformer import aplicar_regras_operacionais, transform_base
-from src.engine import (
-    build_kpis,
-    calcular_medianas_por_cliente,
-    excel_export_supported,
-    exportar_excel,
-    exportar_zip_csv,
-)
+from src.engine import build_kpis, calcular_medianas_por_cliente, exportar_excel
 from src.schema import (
     analyze_schema,
     get_aliases_dataframe,
@@ -169,25 +163,6 @@ def cached_exportar_excel(
 
 
 @st.cache_data(show_spinner=False)
-def cached_exportar_zip_csv(
-    base_bruta: pd.DataFrame,
-    base_validos: pd.DataFrame,
-    inconsistencias: pd.DataFrame,
-    expurgados: pd.DataFrame,
-    anomalias: pd.DataFrame,
-    medianas: pd.DataFrame,
-) -> bytes:
-    return exportar_zip_csv(
-        base_bruta=base_bruta,
-        base_validos=base_validos,
-        inconsistencias=inconsistencias,
-        expurgados=expurgados,
-        anomalias=anomalias,
-        medianas=medianas,
-    ).getvalue()
-
-
-@st.cache_data(show_spinner=False)
 def cached_exportar_medianas_csv_zip(medianas: pd.DataFrame) -> bytes:
     buffer = BytesIO()
     csv_bytes = medianas.to_csv(index=False).encode("utf-8-sig")
@@ -306,7 +281,7 @@ def render_empty_state(available_files: list[str]) -> None:
     with col1:
         st.subheader("Arquivos disponíveis")
         if available_files:
-            st.dataframe(pd.DataFrame({"Arquivo": available_files}), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame({"Arquivo": available_files}), use_container_width=True, hide_index=True)
         else:
             st.warning("Nenhum arquivo no padrão *_data.xlsx foi encontrado.")
     with col2:
@@ -321,7 +296,7 @@ def render_validation_error(relatorio_validacao: dict, schema_report) -> None:
     c2.metric("Obrigatórias encontradas", len(relatorio_validacao["required_found"]))
     c3.metric("Obrigatórias ausentes", len(relatorio_validacao["required_missing"]))
     st.subheader("Colunas obrigatórias ausentes")
-    st.dataframe(pd.DataFrame({"Coluna": relatorio_validacao["required_missing"]}), width="stretch", hide_index=True)
+    st.dataframe(pd.DataFrame({"Coluna": relatorio_validacao["required_missing"]}), use_container_width=True, hide_index=True)
     sugestoes = suggest_missing_columns(schema_report)
     if sugestoes:
         st.subheader("Ações sugeridas")
@@ -352,7 +327,7 @@ def render_clientes(medianas: pd.DataFrame, processados: pd.DataFrame) -> None:
     if cliente_selecionado != "Todos":
         med_exibicao = med_exibicao[med_exibicao["Cod_Cliente"].astype(str) == cliente_selecionado]
         proc_exibicao = proc_exibicao[proc_exibicao["Cod_Cliente"].astype(str) == cliente_selecionado]
-    st.dataframe(med_exibicao[["Cod_Cliente", "Qtd_Apontamentos", "Mediana_Tempo_Formatada", "Metodo_Aplicado"]], width="stretch", hide_index=True, height=320)
+    st.dataframe(med_exibicao[["Cod_Cliente", "Qtd_Apontamentos", "Mediana_Tempo_Formatada", "Metodo_Aplicado"]], use_container_width=True, hide_index=True, height=320)
     if not proc_exibicao.empty:
         base_grafico = proc_exibicao.sort_values("Chegou_em")[["Chegou_em", "Tempo_Sec", "Cod_Cliente"]].copy()
         base_grafico["Tempo_Min"] = base_grafico["Tempo_Sec"] / 60
@@ -366,31 +341,31 @@ def render_qualidade(base_padronizada: pd.DataFrame, relatorio_validacao: dict, 
     x2.metric("Extras não reconhecidas", len(relatorio_validacao["unknown_columns"]))
     x3.metric("Linhas com inconsistência", len(inconsistencias))
     with st.expander("Prévia da base padronizada", expanded=False):
-        st.dataframe(base_padronizada.head(100), width="stretch", height=360)
+        st.dataframe(base_padronizada.head(100), use_container_width=True, height=360)
 
 
 def render_detalhes(inconsistencias: pd.DataFrame, expurgados: pd.DataFrame, anomalias: pd.DataFrame, processados: pd.DataFrame) -> None:
     st.subheader("Detalhes operacionais")
     subtabs = st.tabs(["Processados", "Inconsistências", "Expurgados", "Anomalias"])
     with subtabs[0]:
-        st.dataframe(processados, width="stretch", height=320, hide_index=True)
+        st.dataframe(processados, use_container_width=True, height=320, hide_index=True)
     with subtabs[1]:
-        st.dataframe(inconsistencias, width="stretch", height=320, hide_index=True)
+        st.dataframe(inconsistencias, use_container_width=True, height=320, hide_index=True)
     with subtabs[2]:
-        st.dataframe(expurgados, width="stretch", height=320, hide_index=True)
+        st.dataframe(expurgados, use_container_width=True, height=320, hide_index=True)
     with subtabs[3]:
-        st.dataframe(anomalias, width="stretch", height=320, hide_index=True)
+        st.dataframe(anomalias, use_container_width=True, height=320, hide_index=True)
 
 
-def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict) -> None:
-    """Aba de janelas operacionais de entrega por cliente."""
+def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict, processados: pd.DataFrame) -> None:
+    """Aba de janelas operacionais — 1 cliente por vez, com gráficos simples."""
     st.subheader("Janelas de entrega")
 
     if janelas is None or janelas.empty:
         st.warning("Nenhuma janela calculada. Verifique se há dados processados suficientes.")
         return
 
-    # ── KPIs ──────────────────────────────────────────────────────────────
+    # ── KPIs gerais ───────────────────────────────────────────────────────
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Clientes com janela", janelas_resumo["clientes_com_janela"])
     k2.metric("Amplitude média", f'{janelas_resumo["amplitude_media_min"]} min')
@@ -398,187 +373,195 @@ def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict) -> None:
     k4.metric("Período dominante", janelas_resumo["periodo_mais_comum"])
     k5.metric("Cruzam meia-noite", janelas_resumo["clientes_meianoite"])
 
-    # ── Filtros (sem reprocessar) ─────────────────────────────────────────
-    col_filtro1, col_filtro2 = st.columns([1, 1])
-    with col_filtro1:
-        periodos_disponiveis = ["Todos"] + sorted(
-            janelas.dropna(subset=["Amplitude_Min"])["Periodo_Pico"].unique().tolist()
-        )
-        filtro_periodo = st.selectbox(
-            "Filtrar por período", periodos_disponiveis, index=0, key="janela_periodo"
-        )
-    with col_filtro2:
-        max_clientes = st.slider(
-            "Clientes no gráfico", min_value=5, max_value=80, value=30, step=5, key="janela_max"
-        )
+    st.divider()
 
-    # Aplicar filtro
-    df_vis = janelas.dropna(subset=["Amplitude_Min"]).copy()
-    if filtro_periodo != "Todos":
-        df_vis = df_vis[df_vis["Periodo_Pico"] == filtro_periodo]
-
-    if df_vis.empty:
-        st.info("Nenhum cliente com janela válida neste filtro.")
+    # ── Seletor de cliente (digitável + lista) ────────────────────────────
+    lista_clientes = sorted(
+        janelas.dropna(subset=["Amplitude_Min"])["Cod_Cliente"].astype(str).unique().tolist()
+    )
+    if not lista_clientes:
+        st.info("Nenhum cliente com janela válida.")
         return
 
-    df_vis = df_vis.head(max_clientes)
+    cliente_sel = st.selectbox(
+        "Selecione o cliente (digite para buscar)",
+        options=lista_clientes,
+        index=0,
+        key="janela_cliente_sel",
+    )
 
-    # ── Gráfico horizontal de janelas ─────────────────────────────────────
-    # Montar barras como gráfico Streamlit nativo via Altair/Vega
-    # Cada cliente é uma barra horizontal do Inicio_Min ao Fim_Min
+    # Filtrar dados do cliente
+    df_cliente = processados[processados["Cod_Cliente"].astype(str) == cliente_sel].copy()
+    if df_cliente.empty:
+        st.warning(f"Nenhum registro processado para o cliente {cliente_sel}.")
+        return
 
-    chart_data = []
-    for _, row in df_vis.iterrows():
-        inicio = row["Inicio_Min"]
-        fim = row["Fim_Min"]
-        cruza = row["Cruza_MeiaNoite"]
-        cliente_label = str(row["Cod_Cliente"])
+    # Info da janela
+    info_janela = janelas[janelas["Cod_Cliente"].astype(str) == cliente_sel]
+    if not info_janela.empty:
+        ij = info_janela.iloc[0]
+        j1, j2, j3, j4 = st.columns(4)
+        j1.metric("Janela", f'{ij["Janela_Inicio"]} – {ij["Janela_Fim"]}')
+        j2.metric("Amplitude", f'{ij["Amplitude_Min"]} min')
+        j3.metric("Cobertura", f'{ij["Cobertura_Efetiva"]}%')
+        j4.metric("Entregas", ij["Qtd_Entregas"])
+    else:
+        ij = None
 
-        if cruza:
-            # Duas barras: inicio→1440 e 0→fim
-            chart_data.append({
-                "Cliente": cliente_label,
-                "Inicio": inicio,
-                "Fim": 1440,
-                "Janela": f'{row["Janela_Inicio"]} – {row["Janela_Fim"]}',
-                "Tipo": "Cruza meia-noite",
+    # Preparar dados
+    df_cliente = df_cliente.sort_values("Chegou_em").copy()
+    df_cliente["_chegada_dt"] = pd.to_datetime(df_cliente["Chegou_em"], errors="coerce")
+    df_cliente["Data"] = df_cliente["_chegada_dt"].dt.date
+    df_cliente["Data_str"] = df_cliente["Data"].astype(str)
+    df_cliente["Hora_Min"] = df_cliente["_chegada_dt"].dt.hour * 60 + df_cliente["_chegada_dt"].dt.minute
+
+    # ══════════════════════════════════════════════════════════════════════
+    # GRÁFICO 1 — Horários de chegada por dia (scatter)
+    #   X = dias  |  Y = horário  |  faixa verde = janela calculada
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown("**Horários de chegada por dia**")
+
+    tick_horas = [h * 60 for h in range(0, 25, 2)]
+    layers_horario = []
+
+    # Faixa da janela como fundo
+    if ij is not None:
+        if ij["Cruza_MeiaNoite"]:
+            layers_horario.append({
+                "mark": {"type": "rect", "opacity": 0.10, "color": "#1D9E75"},
+                "encoding": {"y": {"datum": ij["Inicio_Min"]}, "y2": {"datum": 1440}},
             })
-            chart_data.append({
-                "Cliente": cliente_label,
-                "Inicio": 0,
-                "Fim": fim,
-                "Janela": f'{row["Janela_Inicio"]} – {row["Janela_Fim"]}',
-                "Tipo": "Cruza meia-noite",
+            layers_horario.append({
+                "mark": {"type": "rect", "opacity": 0.10, "color": "#1D9E75"},
+                "encoding": {"y": {"datum": 0}, "y2": {"datum": ij["Fim_Min"]}},
             })
         else:
-            chart_data.append({
-                "Cliente": cliente_label,
-                "Inicio": inicio,
-                "Fim": fim,
-                "Janela": f'{row["Janela_Inicio"]} – {row["Janela_Fim"]}',
-                "Tipo": row["Periodo_Pico"],
+            layers_horario.append({
+                "mark": {"type": "rect", "opacity": 0.10, "color": "#1D9E75"},
+                "encoding": {"y": {"datum": ij["Inicio_Min"]}, "y2": {"datum": ij["Fim_Min"]}},
             })
 
-    df_chart = pd.DataFrame(chart_data)
-
-    # Usar st.bar_chart não suporta barras horizontais com range,
-    # então construímos com o Vega-Lite embutido do Streamlit.
-    cores_periodo = {
-        "Manhã": "#1D9E75",
-        "Tarde": "#378ADD",
-        "Noite": "#7F77DD",
-        "Madrugada": "#D85A30",
-        "Cruza meia-noite": "#EF9F27",
-    }
-
-    # Montar horas para eixo X
-    tick_values = [h * 60 for h in range(0, 25, 2)]
-    tick_labels = [f"{h:02d}:00" for h in range(0, 25, 2)]
-
-    vega_spec = {
-        "data": {"values": df_chart.to_dict(orient="records")},
-        "mark": {
-            "type": "bar",
-            "cornerRadiusEnd": 3,
-            "height": {"band": 0.7},
-        },
+    # Pontos
+    layers_horario.append({
+        "mark": {"type": "circle", "size": 35, "opacity": 0.75},
         "encoding": {
-            "y": {
-                "field": "Cliente",
-                "type": "nominal",
-                "sort": None,
-                "axis": {"title": None, "labelFontSize": 11},
-            },
             "x": {
-                "field": "Inicio",
-                "type": "quantitative",
+                "field": "Data_str", "type": "ordinal",
+                "axis": {"title": "Dia", "labelAngle": -45, "labelFontSize": 10},
+            },
+            "y": {
+                "field": "Hora_Min", "type": "quantitative",
                 "scale": {"domain": [0, 1440]},
                 "axis": {
                     "title": "Horário",
-                    "values": tick_values,
+                    "values": tick_horas,
                     "labelExpr": "floor(datum.value / 60) + ':' + (datum.value % 60 < 10 ? '0' : '') + (datum.value % 60)",
-                    "labelFontSize": 11,
                 },
             },
-            "x2": {"field": "Fim"},
-            "color": {
-                "field": "Tipo",
-                "type": "nominal",
-                "scale": {
-                    "domain": list(cores_periodo.keys()),
-                    "range": list(cores_periodo.values()),
-                },
-                "legend": {"title": "Período", "orient": "top"},
-            },
+            "color": {"value": "#378ADD"},
             "tooltip": [
-                {"field": "Cliente", "type": "nominal"},
-                {"field": "Janela", "type": "nominal", "title": "Janela"},
-                {"field": "Tipo", "type": "nominal", "title": "Período"},
+                {"field": "Data_str", "title": "Data"},
+                {"field": "Hora_Min", "title": "Minuto do dia", "format": ".0f"},
             ],
         },
-        "height": max(len(df_vis) * 24, 200),
+    })
+
+    st.vega_lite_chart({
+        "data": {"values": df_cliente[["Data_str", "Hora_Min"]].to_dict(orient="records")},
+        "layer": layers_horario,
+        "height": 280,
         "width": "container",
-    }
+    }, use_container_width=True)
 
-    st.vega_lite_chart(vega_spec, width="stretch")
+    # ══════════════════════════════════════════════════════════════════════
+    # GRÁFICO 2 — Tempo (linha, min) + Volume (barra) por dia
+    #   X = dias  |  Y esq = volume (barras)  |  Y dir = tempo min (linha)
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown("**Tempo de entrega e volume por dia**")
 
-    # ── Tabela de dados ───────────────────────────────────────────────────
-    with st.expander("Tabela de janelas por cliente", expanded=False):
-        colunas_exibir = [
-            "Cod_Cliente", "Qtd_Entregas", "Janela_Inicio", "Janela_Fim",
-            "Amplitude_Min", "Horario_Pico", "Periodo_Pico",
-            "Cobertura_Efetiva", "Cruza_MeiaNoite",
-        ]
-        colunas_presentes = [c for c in colunas_exibir if c in df_vis.columns]
-        st.dataframe(
-            df_vis[colunas_presentes],
-            width="stretch",
-            hide_index=True,
-            height=400,
-        )
+    tem_vol = "Vol_caixas" in df_cliente.columns and df_cliente["Vol_caixas"].notna().any()
 
-    # ── Download janelas CSV ──────────────────────────────────────────────
+    agg_dict = {"Tempo_Sec": ("Tempo_Sec", "median")}
+    if tem_vol:
+        agg_dict["Vol_caixas"] = ("Vol_caixas", "sum")
+    else:
+        agg_dict["Qtd_Entregas"] = ("Tempo_Sec", "count")
+
+    df_dia = df_cliente.groupby("Data_str").agg(**agg_dict).reset_index()
+    df_dia["Tempo_Min"] = (df_dia["Tempo_Sec"] / 60).round(1)
+
+    col_vol = "Vol_caixas" if tem_vol else "Qtd_Entregas"
+    label_vol = "Volume (caixas)" if tem_vol else "Qtd entregas"
+
+    st.vega_lite_chart({
+        "data": {"values": df_dia[["Data_str", "Tempo_Min", col_vol]].to_dict(orient="records")},
+        "resolve": {"scale": {"y": "independent"}},
+        "layer": [
+            {
+                "mark": {"type": "bar", "opacity": 0.4, "color": "#85B7EB", "cornerRadiusEnd": 2},
+                "encoding": {
+                    "x": {
+                        "field": "Data_str", "type": "ordinal",
+                        "axis": {"title": "Dia", "labelAngle": -45, "labelFontSize": 10},
+                    },
+                    "y": {
+                        "field": col_vol, "type": "quantitative",
+                        "axis": {"title": label_vol, "titleColor": "#85B7EB"},
+                    },
+                    "tooltip": [
+                        {"field": "Data_str", "title": "Data"},
+                        {"field": col_vol, "title": label_vol},
+                    ],
+                },
+            },
+            {
+                "mark": {"type": "line", "color": "#D85A30", "strokeWidth": 2,
+                         "point": {"size": 28, "color": "#D85A30"}},
+                "encoding": {
+                    "x": {"field": "Data_str", "type": "ordinal"},
+                    "y": {
+                        "field": "Tempo_Min", "type": "quantitative",
+                        "axis": {"title": "Tempo (min)", "titleColor": "#D85A30"},
+                    },
+                    "tooltip": [
+                        {"field": "Data_str", "title": "Data"},
+                        {"field": "Tempo_Min", "title": "Tempo (min)"},
+                    ],
+                },
+            },
+        ],
+        "height": 280,
+        "width": "container",
+    }, use_container_width=True)
+
+    # ── Tabela de entregas do cliente ─────────────────────────────────────
+    with st.expander("Entregas do cliente", expanded=False):
+        cols_disp = [c for c in ["Chegou_em", "Finalizada_em", "Tempo_Sec", "Vol_caixas"] if c in df_cliente.columns]
+        st.dataframe(df_cliente[cols_disp], use_container_width=True, hide_index=True, height=300)
+
+    # ── Download ──────────────────────────────────────────────────────────
     csv_janelas = janelas.dropna(subset=["Amplitude_Min"]).to_csv(index=False).encode("utf-8-sig")
     st.download_button(
-        "Baixar janelas em CSV",
+        "Baixar todas as janelas em CSV",
         csv_janelas,
         f"{st.session_state.get('ultima_unidade', 'unidade')}_janelas.csv",
         "text/csv",
-        width="stretch",
+        use_container_width=True,
     )
 
 
 def render_exportacao(unidade: str, base_padronizada: pd.DataFrame, processados: pd.DataFrame, inconsistencias: pd.DataFrame, expurgados: pd.DataFrame, anomalias: pd.DataFrame, medianas: pd.DataFrame) -> None:
     st.subheader("Exportação")
-    pacote_csv_zip = cached_exportar_zip_csv(base_padronizada, processados, inconsistencias, expurgados, anomalias, medianas)
+    excel_bytes = cached_exportar_excel(base_padronizada, processados, inconsistencias, expurgados, anomalias, medianas)
     medianas_zip = cached_exportar_medianas_csv_zip(medianas)
     inconsistencias_zip = cached_exportar_inconsistencias_csv_zip(inconsistencias)
-    excel_bytes = None
-    excel_error = None
-
-    if excel_export_supported():
-        try:
-            excel_bytes = cached_exportar_excel(base_padronizada, processados, inconsistencias, expurgados, anomalias, medianas)
-        except Exception as exc:
-            excel_error = str(exc)
-    else:
-        excel_error = "A exportacao em Excel esta indisponivel neste ambiente porque o pacote 'openpyxl' nao esta instalado."
-
-    if excel_error:
-        st.warning(f"{excel_error} O pacote CSV completo continua disponível.")
-
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        if excel_bytes is not None:
-            st.download_button("Baixar Excel completo", excel_bytes, f"{unidade}_luna_resultado.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
-        else:
-            st.button("Excel indisponível", disabled=True, width="stretch")
+        st.download_button("Baixar Excel completo", excel_bytes, f"{unidade}_luna_resultado.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
     with c2:
-        st.download_button("Baixar pacote CSV", pacote_csv_zip, f"{unidade}_luna_resultado_csv.zip", "application/zip", width="stretch")
+        st.download_button("Baixar medianas em ZIP", medianas_zip, f"{unidade}_medianas.zip", "application/zip", use_container_width=True)
     with c3:
-        st.download_button("Baixar medianas em ZIP", medianas_zip, f"{unidade}_medianas.zip", "application/zip", width="stretch")
-    with c4:
-        st.download_button("Baixar inconsistências em ZIP", inconsistencias_zip, f"{unidade}_inconsistencias.zip", "application/zip", width="stretch")
+        st.download_button("Baixar inconsistências em ZIP", inconsistencias_zip, f"{unidade}_inconsistencias.zip", "application/zip", use_container_width=True)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -600,7 +583,7 @@ def main() -> None:
                 minimo_apontamentos = st.number_input("Mínimo de apontamentos por cliente", min_value=1, value=4, step=1)
                 tempo_padrao_poucos_apontamentos = st.number_input("Tempo padrão para poucos apontamentos (segundos)", min_value=1, value=600, step=1)
                 ajuste_percentual = st.slider("Ajuste percentual", min_value=-20, max_value=100, value=0, step=1)
-            processar = st.form_submit_button("Processar análise", width="stretch")
+            processar = st.form_submit_button("Processar análise", use_container_width=True)
         st.divider()
         st.caption("Arquivos detectados")
         if available_files:
@@ -629,7 +612,7 @@ def main() -> None:
     with tab_clientes:
         render_clientes(st.session_state["medianas"], st.session_state["processados"])
     with tab_janelas:
-        render_janelas(st.session_state["janelas"], st.session_state["janelas_resumo"])
+        render_janelas(st.session_state["janelas"], st.session_state["janelas_resumo"], st.session_state["processados"])
     with tab_qualidade:
         render_qualidade(st.session_state["base_padronizada"], relatorio_validacao, st.session_state["inconsistencias"])
     with tab_detalhes:
