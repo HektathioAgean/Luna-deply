@@ -281,7 +281,7 @@ def render_empty_state(available_files: list[str]) -> None:
     with col1:
         st.subheader("Arquivos disponíveis")
         if available_files:
-            st.dataframe(pd.DataFrame({"Arquivo": available_files}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"Arquivo": available_files}), width="stretch", hide_index=True)
         else:
             st.warning("Nenhum arquivo no padrão *_data.xlsx foi encontrado.")
     with col2:
@@ -296,7 +296,7 @@ def render_validation_error(relatorio_validacao: dict, schema_report) -> None:
     c2.metric("Obrigatórias encontradas", len(relatorio_validacao["required_found"]))
     c3.metric("Obrigatórias ausentes", len(relatorio_validacao["required_missing"]))
     st.subheader("Colunas obrigatórias ausentes")
-    st.dataframe(pd.DataFrame({"Coluna": relatorio_validacao["required_missing"]}), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame({"Coluna": relatorio_validacao["required_missing"]}), width="stretch", hide_index=True)
     sugestoes = suggest_missing_columns(schema_report)
     if sugestoes:
         st.subheader("Ações sugeridas")
@@ -327,7 +327,7 @@ def render_clientes(medianas: pd.DataFrame, processados: pd.DataFrame) -> None:
     if cliente_selecionado != "Todos":
         med_exibicao = med_exibicao[med_exibicao["Cod_Cliente"].astype(str) == cliente_selecionado]
         proc_exibicao = proc_exibicao[proc_exibicao["Cod_Cliente"].astype(str) == cliente_selecionado]
-    st.dataframe(med_exibicao[["Cod_Cliente", "Qtd_Apontamentos", "Mediana_Tempo_Formatada", "Metodo_Aplicado"]], use_container_width=True, hide_index=True, height=320)
+    st.dataframe(med_exibicao[["Cod_Cliente", "Qtd_Apontamentos", "Mediana_Tempo_Formatada", "Metodo_Aplicado"]], width="stretch", hide_index=True, height=320)
     if not proc_exibicao.empty:
         base_grafico = proc_exibicao.sort_values("Chegou_em")[["Chegou_em", "Tempo_Sec", "Cod_Cliente"]].copy()
         base_grafico["Tempo_Min"] = base_grafico["Tempo_Sec"] / 60
@@ -341,20 +341,20 @@ def render_qualidade(base_padronizada: pd.DataFrame, relatorio_validacao: dict, 
     x2.metric("Extras não reconhecidas", len(relatorio_validacao["unknown_columns"]))
     x3.metric("Linhas com inconsistência", len(inconsistencias))
     with st.expander("Prévia da base padronizada", expanded=False):
-        st.dataframe(base_padronizada.head(100), use_container_width=True, height=360)
+        st.dataframe(base_padronizada.head(100), width="stretch", height=360)
 
 
 def render_detalhes(inconsistencias: pd.DataFrame, expurgados: pd.DataFrame, anomalias: pd.DataFrame, processados: pd.DataFrame) -> None:
     st.subheader("Detalhes operacionais")
     subtabs = st.tabs(["Processados", "Inconsistências", "Expurgados", "Anomalias"])
     with subtabs[0]:
-        st.dataframe(processados, use_container_width=True, height=320, hide_index=True)
+        st.dataframe(processados, width="stretch", height=320, hide_index=True)
     with subtabs[1]:
-        st.dataframe(inconsistencias, use_container_width=True, height=320, hide_index=True)
+        st.dataframe(inconsistencias, width="stretch", height=320, hide_index=True)
     with subtabs[2]:
-        st.dataframe(expurgados, use_container_width=True, height=320, hide_index=True)
+        st.dataframe(expurgados, width="stretch", height=320, hide_index=True)
     with subtabs[3]:
-        st.dataframe(anomalias, use_container_width=True, height=320, hide_index=True)
+        st.dataframe(anomalias, width="stretch", height=320, hide_index=True)
 
 
 def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict, processados: pd.DataFrame) -> None:
@@ -471,7 +471,7 @@ def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict, processados: pd.
         "layer": layers_horario,
         "height": 280,
         "width": "container",
-    }, use_container_width=True)
+    }, width="stretch")
 
     # ══════════════════════════════════════════════════════════════════════
     # GRÁFICO 2 — Tempo (linha, min) + Volume (barra) por dia
@@ -532,12 +532,12 @@ def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict, processados: pd.
         ],
         "height": 280,
         "width": "container",
-    }, use_container_width=True)
+    }, width="stretch")
 
     # ── Tabela de entregas do cliente ─────────────────────────────────────
     with st.expander("Entregas do cliente", expanded=False):
         cols_disp = [c for c in ["Chegou_em", "Finalizada_em", "Tempo_Sec", "Vol_caixas"] if c in df_cliente.columns]
-        st.dataframe(df_cliente[cols_disp], use_container_width=True, hide_index=True, height=300)
+        st.dataframe(df_cliente[cols_disp], width="stretch", hide_index=True, height=300)
 
     # ── Download ──────────────────────────────────────────────────────────
     csv_janelas = janelas.dropna(subset=["Amplitude_Min"]).to_csv(index=False).encode("utf-8-sig")
@@ -546,7 +546,7 @@ def render_janelas(janelas: pd.DataFrame, janelas_resumo: dict, processados: pd.
         csv_janelas,
         f"{st.session_state.get('ultima_unidade', 'unidade')}_janelas.csv",
         "text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -557,11 +557,11 @@ def render_exportacao(unidade: str, base_padronizada: pd.DataFrame, processados:
     inconsistencias_zip = cached_exportar_inconsistencias_csv_zip(inconsistencias)
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("Baixar Excel completo", excel_bytes, f"{unidade}_luna_resultado.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button("Baixar Excel completo", excel_bytes, f"{unidade}_luna_resultado.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
     with c2:
-        st.download_button("Baixar medianas em ZIP", medianas_zip, f"{unidade}_medianas.zip", "application/zip", use_container_width=True)
+        st.download_button("Baixar medianas em ZIP", medianas_zip, f"{unidade}_medianas.zip", "application/zip", width="stretch")
     with c3:
-        st.download_button("Baixar inconsistências em ZIP", inconsistencias_zip, f"{unidade}_inconsistencias.zip", "application/zip", use_container_width=True)
+        st.download_button("Baixar inconsistências em ZIP", inconsistencias_zip, f"{unidade}_inconsistencias.zip", "application/zip", width="stretch")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -583,7 +583,7 @@ def main() -> None:
                 minimo_apontamentos = st.number_input("Mínimo de apontamentos por cliente", min_value=1, value=4, step=1)
                 tempo_padrao_poucos_apontamentos = st.number_input("Tempo padrão para poucos apontamentos (segundos)", min_value=1, value=600, step=1)
                 ajuste_percentual = st.slider("Ajuste percentual", min_value=-20, max_value=100, value=0, step=1)
-            processar = st.form_submit_button("Processar análise", use_container_width=True)
+            processar = st.form_submit_button("Processar análise", width="stretch")
         st.divider()
         st.caption("Arquivos detectados")
         if available_files:
