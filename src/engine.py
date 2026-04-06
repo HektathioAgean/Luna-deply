@@ -1,3 +1,4 @@
+from importlib.util import find_spec
 from io import BytesIO
 from pathlib import Path
 import zipfile
@@ -5,6 +6,10 @@ import zipfile
 import pandas as pd
 
 from config import EXPORT_DIR
+
+
+def excel_export_supported() -> bool:
+    return find_spec("openpyxl") is not None
 
 
 def format_seconds(value: float | int | None) -> str:
@@ -106,6 +111,12 @@ def exportar_excel(
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
 ) -> BytesIO:
+    if not excel_export_supported():
+        raise RuntimeError(
+            "A exportacao em Excel esta indisponivel neste ambiente porque o pacote "
+            "'openpyxl' nao esta instalado."
+        )
+
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
