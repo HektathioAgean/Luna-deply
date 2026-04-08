@@ -672,6 +672,7 @@ def main() -> None:
     st.caption("Análise de tempos operacionais")
 
     available_files = list_available_unit_files()
+    unit_options = available_files if available_files else AVAILABLE_UNITS
 
     with st.sidebar:
         st.header("Entrada")
@@ -679,15 +680,15 @@ def main() -> None:
         with st.form("form_processamento"):
             unidade = st.selectbox(
                 "Selecione a unidade",
-                options=AVAILABLE_UNITS,
+                options=unit_options,
                 index=0,
             )
 
-            st.caption("Arquivos encontrados na pasta data:")
+            st.caption("Arquivos configurados no Google Drive:")
             if available_files:
                 st.write(available_files)
             else:
-                st.warning("Nenhum arquivo no padrão *_data.csv ou *_data.xlsx foi encontrado na pasta data.")
+                st.warning("Nenhum arquivo foi configurado em [drive_files] nos secrets.")
 
             st.header("Parâmetros")
 
@@ -872,25 +873,23 @@ def main() -> None:
             st.warning("Foram detectadas colunas duplicadas após a padronização:")
             st.write(relatorio_validacao["duplicate_standardized_columns"])
 
-        st.markdown("### Mapeamento aplicado")
         exibir_preview_df(
             pd.DataFrame(relatorio_validacao["mapping_preview"]),
-            "Mapping preview",
+            "Mapeamento aplicado",
             limite=1000,
             height=320,
         )
 
-        st.markdown("### Schema oficial")
+        st.subheader("Schema oficial")
         st.dataframe(
             get_schema_dataframe(),
             use_container_width=True,
             height=260,
         )
 
-        st.markdown("### Aliases reconhecidos")
         exibir_preview_df(
             get_aliases_dataframe(),
-            "Aliases",
+            "Aliases reconhecidos",
             limite=1000,
             height=320,
         )
@@ -1153,7 +1152,7 @@ def main() -> None:
                         inconsistencias=inconsistencias,
                         expurgados=expurgados,
                         anomalias=anomalias,
-                        medianas=medianas,
+                        medianas=medianas,   
                     )
 
             if "excel_bytes" in st.session_state:
