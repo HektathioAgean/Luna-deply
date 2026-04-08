@@ -6,10 +6,17 @@ ASSETS_DIR = BASE_DIR / "assets"
 EXPORT_DIR = BASE_DIR / "exports"
 DATA_DIR = BASE_DIR / "data"
 
-SRC_DIR.mkdir(parents=True, exist_ok=True)
-ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+def initialize_directories() -> None:
+    """
+    Cria os diretórios necessários para o projeto.
+    Deve ser chamada explicitamente no início da aplicação.
+    """
+    SRC_DIR.mkdir(parents=True, exist_ok=True)
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 
 APP_NAME = "Luna"
 APP_TITLE = "Luna | Análise de Tempos"
