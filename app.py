@@ -1,89 +1,165 @@
-from __future__ import annotations
-
 import os
-import sys
-import zipfile
-from io import BytesIO
-from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
-import numpy as np
 import streamlit as st
-
-BASE_DIR = Path(__file__).resolve().parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
 
 from config import APP_TITLE, AVAILABLE_UNITS, LAYOUT
 from src.data_loader import load_unit_file, list_available_unit_files
 from src.data_transformer import aplicar_regras_operacionais, transform_base
-from src.engine import build_kpis, calcular_medianas_por_cliente, exportar_excel
+from src.engine import (
+    build_kpis,
+    calcular_medianas_por_cliente,
+    exportar_excel,
+    format_seconds,
+    format_seconds_hhmm,
+    montar_evolucao_cliente,
+)
 from src.schema import (
     analyze_schema,
+    get_aliases_dataframe,
+    get_schema_dataframe,
     schema_report_to_dict,
     standardize_columns,
     suggest_missing_columns,
 )
-from src.window_calculator import calcular_janelas, resumo_janelas
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
-st.set_page_config(page_title=APP_TITLE, layout=LAYOUT, initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title=APP_TITLE,
+    layout=LAYOUT,
+    initial_sidebar_state="expanded",
+)
 
-# Compat: width param name for st.dataframe / st.download_button etc.
-# Streamlit >= 1.56 uses width="stretch" instead of use_container_width=True
-W = {"width": "stretch"}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SESSION STATE
-# ══════════════════════════════════════════════════════════════════════════════
-
-STATE_KEYS = [
-    "resultado_pronto",
-    "ultima_unidade",
-    "ultimo_param_hash",
-    "base_padronizada",
-    "schema_report",
-    "relatorio_validacao",
-    "inconsistencias",
-    "processados",
-    "expurgados",
-    "anomalias",
-    "medianas",
-    "kpis",
-    "janelas",
-    "janelas_resumo",
-    "lista_clientes",
-    "lista_clientes_janela",
-    "proc_cliente_idx",
-    "export_excel_bytes",
-    "export_medianas_zip",
-    "export_inconsistencias_zip",
-]
-
-
-def init_state() -> None:
-    for key in STATE_KEYS:
-        st.session_state.setdefault(key, None)
-    if st.session_state["resultado_pronto"] is None:
-        st.session_state["resultado_pronto"] = False
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CACHE — só leitura do arquivo
-# ══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner=False)
-def cached_load_unit_file(unidade: str) -> pd.DataFrame:
-    return load_unit_file(unidade)
+def executar_pipeline(
+    unidade: str,
+    tempo_min_expurgo: int,
+    tempo_max_anomalia: int,
+    eventos_previos: int,
+    minimo_apontamentos: int,
+    tempo_padrao_poucos_apontamentos: int,
+    ajuste_percentual: int,
+) -> dict:
+    base_bruta = load_unit_file(unidade)
+
+    if base_bruta is None or base_bruta.empty:
+        return {
+            "base_bruta": pd.DataFrame(),
+            "base_padronizada": pd.DataFrame(),
+            "schema_report": None,
+            "relatorio_validacao": None,
+            "inconsistencias": pd.DataFrame(),
+            "processados": pd.DataFrame(),
+            "expurgados": pd.DataFrame(),
+            "anomalias": pd.DataFrame(),
+            "medianas": pd.DataFrame(),
+            "kpis": {},
+            "erro": "A base está vazia ou não pôde ser carregada.",
+        }
+
+    base_padronizada = standardize_columns(base_bruta)
+    schema_report = analyze_schema(base_padronizada)
+    relatorio_validacao = schema_report_to_dict(schema_report)
+
+    base_validos, inconsistencias = transform_base(base_padronizada)
+
+    processados, expurgados, anomalias = aplicar_regras_operacionais(
+        base_validos,
+        tempo_min_expurgo=tempo_min_expurgo,
+        tempo_max_anomalia=tempo_max_anomalia,
+    )
+
+    medianas = calcular_medianas_por_cliente(
+        df=processados,
+        eventos_previos=eventos_previos,
+        minimo_apontamentos=minimo_apontamentos,
+        tempo_padrao_poucos_apontamentos=tempo_padrao_poucos_apontamentos,
+        ajuste_percentual=ajuste_percentual,
+    )
+
+    kpis = build_kpis(
+        base_bruta=base_padronizada,
+        base_validos=processados,
+        inconsistencias=inconsistencias,
+        expurgados=expurgados,
+        anomalias=anomalias,
+        medianas=medianas,
+    )
+
+    return {
+        "base_bruta": base_bruta,
+        "base_padronizada": base_padronizada,
+        "schema_report": schema_report,
+        "relatorio_validacao": relatorio_validacao,
+        "inconsistencias": inconsistencias,
+        "processados": processados,
+        "expurgados": expurgados,
+        "anomalias": anomalias,
+        "medianas": medianas,
+        "kpis": kpis,
+        "erro": None,
+    }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PROCESSAMENTO
-# ══════════════════════════════════════════════════════════════════════════════
+def gerar_figura_evolucao(df_evolucao: pd.DataFrame, mediana_cliente: float, cliente: str):
+    fig, ax = plt.subplots(figsize=(14, 6))
 
-def get_params_dict(
+    entregas = df_evolucao[df_evolucao["Tipo"] == "Entrega"].copy()
+    entregas["Data_Label"] = pd.to_datetime(entregas["Data_Chegada"], errors="coerce").dt.strftime("%d/%m/%Y")
+
+    x_linha = list(range(len(entregas)))
+    x_mediana = len(entregas)
+
+    ax.plot(
+        x_linha,
+        entregas["Tempo_Sec"].tolist(),
+        marker="o",
+        linewidth=2,
+    )
+
+    ax.bar(
+        [x_mediana],
+        [mediana_cliente],
+        width=0.6,
+    )
+
+    for i, y in enumerate(entregas["Tempo_Sec"].tolist()):
+        ax.annotate(
+            format_seconds_hhmm(y),
+            (i, y),
+            textcoords="offset points",
+            xytext=(0, 8),
+            ha="center",
+            fontsize=9,
+        )
+
+    ax.annotate(
+        format_seconds_hhmm(mediana_cliente),
+        (x_mediana, mediana_cliente),
+        textcoords="offset points",
+        xytext=(0, 8),
+        ha="center",
+        fontsize=10,
+        fontweight="bold",
+    )
+
+    x_labels = entregas["Data_Label"].tolist() + ["Mediana"]
+    ax.set_xticks(list(range(len(x_labels))))
+    ax.set_xticklabels(x_labels, rotation=45, ha="right")
+    ax.set_title(f"Evolução dos tempos | Cliente {cliente}")
+    ax.set_xlabel("Datas das entregas")
+    ax.set_ylabel("Tempo de entrega (segundos)")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.35)
+
+    plt.tight_layout()
+    return fig
+
+
+def _parametros_atuais(
+    unidade: str,
     tempo_min_expurgo: int,
     tempo_max_anomalia: int,
     eventos_previos: int,
@@ -92,6 +168,7 @@ def get_params_dict(
     ajuste_percentual: int,
 ) -> dict:
     return {
+        "unidade": unidade,
         "tempo_min_expurgo": int(tempo_min_expurgo),
         "tempo_max_anomalia": int(tempo_max_anomalia),
         "eventos_previos": int(eventos_previos),
@@ -101,489 +178,326 @@ def get_params_dict(
     }
 
 
-def processar_analise(unidade: str, params: dict) -> None:
-    param_hash = tuple(sorted(params.items()))
+def main() -> None:
+    st.title("Luna")
+    st.caption("Análise de tempos operacionais")
 
-    if (
-        st.session_state.get("resultado_pronto")
-        and st.session_state.get("ultima_unidade") == unidade
-        and st.session_state.get("ultimo_param_hash") == param_hash
-    ):
+    if "luna_processar_solicitado" not in st.session_state:
+        st.session_state["luna_processar_solicitado"] = False
+    if "luna_parametros_processados" not in st.session_state:
+        st.session_state["luna_parametros_processados"] = None
+
+    available_files = list_available_unit_files()
+    unit_options = available_files if available_files else AVAILABLE_UNITS
+
+    with st.sidebar:
+        st.header("Entrada")
+
+        unidade = st.selectbox(
+            "Selecione a unidade",
+            options=unit_options,
+            index=0,
+        )
+
+        st.caption("Unidades configuradas para leitura no Google Drive:")
+        if available_files:
+            st.write(available_files)
+        else:
+            st.warning(
+                "Nenhuma unidade foi encontrada em `[drive_files]` no "
+                "arquivo `.streamlit/secrets.toml`."
+            )
+
+        st.header("Parâmetros")
+
+        tempo_min_expurgo = st.number_input(
+            "Tempo mínimo de expurgo (segundos)",
+            min_value=1,
+            value=300,
+            step=1,
+        )
+
+        tempo_max_anomalia = st.number_input(
+            "Tempo máximo para anomalia (segundos)",
+            min_value=1,
+            value=21600,
+            step=1,
+        )
+
+        eventos_previos = st.number_input(
+            "Eventos prévios",
+            min_value=1,
+            value=10,
+            step=1,
+        )
+
+        minimo_apontamentos = st.number_input(
+            "Mínimo de apontamentos por cliente",
+            min_value=1,
+            value=4,
+            step=1,
+        )
+
+        tempo_padrao_poucos_apontamentos = st.number_input(
+            "Tempo padrão para poucos apontamentos (segundos)",
+            min_value=1,
+            value=600,
+            step=1,
+        )
+
+        ajuste_percentual = st.slider(
+            "Ajuste percentual",
+            min_value=-20,
+            max_value=100,
+            value=0,
+            step=1,
+        )
+
+        parametros_sidebar = _parametros_atuais(
+            unidade=unidade,
+            tempo_min_expurgo=tempo_min_expurgo,
+            tempo_max_anomalia=tempo_max_anomalia,
+            eventos_previos=eventos_previos,
+            minimo_apontamentos=minimo_apontamentos,
+            tempo_padrao_poucos_apontamentos=tempo_padrao_poucos_apontamentos,
+            ajuste_percentual=ajuste_percentual,
+        )
+
+        processar = st.button("Processar base", use_container_width=True)
+
+        if processar:
+            st.session_state["luna_processar_solicitado"] = True
+            st.session_state["luna_parametros_processados"] = parametros_sidebar.copy()
+
+    tab_base, tab_validacao, tab_processamento, tab_resultados, tab_evolucao, tab_exportacao = st.tabs(
+        ["Base", "Validação", "Processamento", "Resultados", "Evolução Cliente", "Exportação"]
+    )
+
+    if not st.session_state.get("luna_processar_solicitado", False):
+        with tab_base:
+            st.info("Selecione a unidade, ajuste os parâmetros e clique em 'Processar base'.")
         return
 
-    with st.status("Processando base", expanded=True) as status:
-        status.write("Carregando arquivo da unidade…")
-        base_bruta = cached_load_unit_file(unidade)
-        if base_bruta.empty:
-            raise ValueError("A base está vazia ou não pôde ser carregada.")
+    parametros_processados = st.session_state.get("luna_parametros_processados")
+    if not parametros_processados:
+        with tab_base:
+            st.info("Selecione a unidade, ajuste os parâmetros e clique em 'Processar base'.")
+        return
 
-        status.write("Padronizando colunas…")
-        base_padronizada = standardize_columns(base_bruta)
-        schema_report = analyze_schema(base_padronizada)
-        relatorio_validacao = schema_report_to_dict(schema_report)
+    if parametros_sidebar != parametros_processados:
+        st.warning(
+            "Os resultados exibidos correspondem ao último processamento executado. "
+            "Se quiser aplicar os parâmetros atuais, clique novamente em 'Processar base'."
+        )
 
-        if not relatorio_validacao["is_valid"]:
-            st.session_state.update(
-                base_padronizada=base_padronizada,
-                schema_report=schema_report,
-                relatorio_validacao=relatorio_validacao,
-                resultado_pronto=False,
-            )
-            status.update(label="Validação reprovada", state="error", expanded=True)
+    try:
+        resultado = executar_pipeline(**parametros_processados)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+
+    if resultado.get("erro"):
+        st.error(resultado["erro"])
+        return
+
+    base_bruta = resultado["base_bruta"]
+    base_padronizada = resultado["base_padronizada"]
+    schema_report = resultado["schema_report"]
+    relatorio_validacao = resultado["relatorio_validacao"]
+    inconsistencias = resultado["inconsistencias"]
+    processados = resultado["processados"]
+    expurgados = resultado["expurgados"]
+    anomalias = resultado["anomalias"]
+    medianas = resultado["medianas"]
+    kpis = resultado["kpis"]
+
+    with tab_base:
+        st.subheader("Visão da base")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Linhas brutas", len(base_bruta))
+        col2.metric("Colunas encontradas", relatorio_validacao["total_columns"])
+        col3.metric("Estrutura válida", "Sim" if relatorio_validacao["is_valid"] else "Não")
+
+        st.dataframe(base_padronizada.head(100), use_container_width=True, height=450)
+
+    with tab_validacao:
+        st.subheader("Validação estrutural")
+
+        if relatorio_validacao["is_valid"]:
+            st.success("Estrutura válida para processamento.")
+        else:
+            st.error("Estrutura inválida.")
+            st.write("Colunas obrigatórias ausentes:")
+            st.write(relatorio_validacao["required_missing"])
+
+            sugestoes = suggest_missing_columns(schema_report)
+            if sugestoes:
+                st.markdown("### Sugestões")
+                for sugestao in sugestoes:
+                    st.write(f"- {sugestao}")
             return
 
-        status.write("Classificando válidos e inconsistências…")
-        base_validos, inconsistencias = transform_base(base_padronizada)
+        col1, col2 = st.columns(2)
 
-        status.write("Aplicando expurgo e anomalias…")
-        processados, expurgados, anomalias = aplicar_regras_operacionais(
-            base_validos,
-            tempo_min_expurgo=params["tempo_min_expurgo"],
-            tempo_max_anomalia=params["tempo_max_anomalia"],
+        with col1:
+            st.markdown("### Colunas obrigatórias encontradas")
+            st.dataframe(
+                {"Colunas": relatorio_validacao["required_found"]},
+                use_container_width=True,
+                height=180,
+            )
+
+        with col2:
+            st.markdown("### Colunas extras não reconhecidas")
+            st.dataframe(
+                {"Colunas": relatorio_validacao["unknown_columns"]},
+                use_container_width=True,
+                height=180,
+            )
+
+        if relatorio_validacao["duplicate_standardized_columns"]:
+            st.warning("Foram detectadas colunas duplicadas após a padronização:")
+            st.write(relatorio_validacao["duplicate_standardized_columns"])
+
+        st.markdown("### Mapeamento aplicado")
+        st.dataframe(
+            relatorio_validacao["mapping_preview"],
+            use_container_width=True,
+            height=320,
         )
-        # base_validos não é mais necessária — liberar memória
-        del base_validos
 
-        status.write("Calculando medianas por cliente…")
-        medianas = calcular_medianas_por_cliente(
-            df=processados,
-            eventos_previos=params["eventos_previos"],
-            minimo_apontamentos=params["minimo_apontamentos"],
-            tempo_padrao_poucos_apontamentos=params["tempo_padrao_poucos_apontamentos"],
-            ajuste_percentual=params["ajuste_percentual"],
+        st.markdown("### Schema oficial")
+        st.dataframe(
+            get_schema_dataframe(),
+            use_container_width=True,
+            height=260,
         )
 
-        status.write("Calculando janelas de entrega…")
-        janelas = calcular_janelas(
-            df=processados,
-            cobertura_alvo=0.80,
-            min_entregas=params["minimo_apontamentos"],
+        st.markdown("### Aliases reconhecidos")
+        st.dataframe(
+            get_aliases_dataframe(),
+            use_container_width=True,
+            height=320,
         )
-        janelas_res = resumo_janelas(janelas)
 
-        status.write("Consolidando indicadores…")
-        kpis = build_kpis(
+    with tab_processamento:
+        st.subheader("KPIs do processamento")
+
+        col1, col2, col3 = st.columns(3)
+        col4, col5, col6 = st.columns(3)
+
+        col1.metric("Linhas válidas", kpis["linhas_validas"])
+        col2.metric("Inconsistências", kpis["inconsistencias"])
+        col3.metric("Expurgados", kpis["expurgados"])
+        col4.metric("Anomalias", kpis["anomalias"])
+        col5.metric("Clientes únicos", kpis["clientes_unicos"])
+        col6.metric("Mediana global", kpis["mediana_global_fmt"])
+
+        st.subheader("Resumo")
+        st.write(
+            {
+                "unidade": parametros_processados["unidade"],
+                "linhas_brutas": kpis["linhas_brutas"],
+                "linhas_validas": kpis["linhas_validas"],
+                "inconsistencias": kpis["inconsistencias"],
+                "expurgados": kpis["expurgados"],
+                "anomalias": kpis["anomalias"],
+                "clientes_unicos": kpis["clientes_unicos"],
+                "mediana_global": kpis["mediana_global_fmt"],
+            }
+        )
+
+    with tab_resultados:
+        st.subheader("Medianas por cliente")
+        st.dataframe(medianas, use_container_width=True, height=320)
+
+        st.subheader("Inconsistências")
+        st.dataframe(inconsistencias, use_container_width=True, height=240)
+
+        st.subheader("Expurgados")
+        st.dataframe(expurgados, use_container_width=True, height=240)
+
+        st.subheader("Anomalias")
+        st.dataframe(anomalias, use_container_width=True, height=240)
+
+    evolucao_cliente = pd.DataFrame()
+
+    with tab_evolucao:
+        st.subheader("Evolução por cliente")
+
+        if processados.empty or medianas.empty:
+            st.info("Não há dados processados para exibir a evolução por cliente.")
+        else:
+            clientes = (
+                processados["Cod_Cliente"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .sort_values()
+                .unique()
+                .tolist()
+            )
+
+            if not clientes:
+                st.info("Nenhum cliente disponível para análise.")
+            else:
+                cliente_default = clientes[0]
+                if "cliente_evolucao" not in st.session_state or st.session_state["cliente_evolucao"] not in clientes:
+                    st.session_state["cliente_evolucao"] = cliente_default
+
+                cliente = st.selectbox(
+                    "Selecione o cliente",
+                    options=clientes,
+                    key="cliente_evolucao",
+                )
+
+                evolucao_cliente, mediana_cliente = montar_evolucao_cliente(
+                    base_validos=processados,
+                    medianas=medianas,
+                    cliente=cliente,
+                )
+
+                if evolucao_cliente.empty:
+                    st.warning("Não foi possível montar a evolução para o cliente selecionado.")
+                else:
+                    col1, col2 = st.columns(2)
+                    col1.metric("Cliente", cliente)
+                    col2.metric("Mediana do cliente", format_seconds(mediana_cliente))
+
+                    fig = gerar_figura_evolucao(evolucao_cliente, mediana_cliente, cliente)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
+
+                    tabela_exibicao = evolucao_cliente.copy()
+                    if "Data_Chegada" in tabela_exibicao.columns:
+                        tabela_exibicao["Data_Chegada"] = pd.to_datetime(
+                            tabela_exibicao["Data_Chegada"], errors="coerce"
+                        ).dt.strftime("%d/%m/%Y")
+                        tabela_exibicao["Data_Chegada"] = tabela_exibicao["Data_Chegada"].fillna("Mediana")
+
+                    st.dataframe(tabela_exibicao, use_container_width=True, height=360)
+
+    with tab_exportacao:
+        st.subheader("Exportação")
+
+        excel_bytes = exportar_excel(
             base_bruta=base_padronizada,
             base_validos=processados,
             inconsistencias=inconsistencias,
             expurgados=expurgados,
             anomalias=anomalias,
             medianas=medianas,
+            evolucao_cliente=evolucao_cliente,
         )
 
-        # Pré-computar índices leves para navegação
-        proc_cliente_idx = processados["Cod_Cliente"].astype(str).values
-        lista_clientes = sorted(set(proc_cliente_idx))
-        lista_clientes_janela = sorted(
-            janelas.dropna(subset=["Amplitude_Min"])["Cod_Cliente"].astype(str).unique().tolist()
-        )
-
-        st.session_state.update(
-            ultima_unidade=unidade,
-            ultimo_param_hash=param_hash,
-            base_padronizada=base_padronizada,
-            schema_report=schema_report,
-            relatorio_validacao=relatorio_validacao,
-            inconsistencias=inconsistencias,
-            processados=processados,
-            expurgados=expurgados,
-            anomalias=anomalias,
-            medianas=medianas,
-            kpis=kpis,
-            janelas=janelas,
-            janelas_resumo=janelas_res,
-            lista_clientes=lista_clientes,
-            lista_clientes_janela=lista_clientes_janela,
-            proc_cliente_idx=proc_cliente_idx,
-            export_excel_bytes=None,
-            export_medianas_zip=None,
-            export_inconsistencias_zip=None,
-            resultado_pronto=True,
-        )
-        status.update(label="Processamento concluído", state="complete", expanded=False)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# EXPORTAÇÃO — lazy
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _get_export_excel() -> bytes:
-    if st.session_state["export_excel_bytes"] is None:
-        st.session_state["export_excel_bytes"] = exportar_excel(
-            base_bruta=st.session_state["base_padronizada"],
-            base_validos=st.session_state["processados"],
-            inconsistencias=st.session_state["inconsistencias"],
-            expurgados=st.session_state["expurgados"],
-            anomalias=st.session_state["anomalias"],
-            medianas=st.session_state["medianas"],
-        ).getvalue()
-    return st.session_state["export_excel_bytes"]
-
-
-def _get_export_medianas_zip() -> bytes:
-    if st.session_state["export_medianas_zip"] is None:
-        buf = BytesIO()
-        csv_bytes = st.session_state["medianas"].to_csv(index=False).encode("utf-8-sig")
-        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("medianas_cliente.csv", csv_bytes)
-        buf.seek(0)
-        st.session_state["export_medianas_zip"] = buf.getvalue()
-    return st.session_state["export_medianas_zip"]
-
-
-def _get_export_inconsistencias_zip() -> bytes:
-    if st.session_state["export_inconsistencias_zip"] is None:
-        buf = BytesIO()
-        csv_bytes = st.session_state["inconsistencias"].to_csv(index=False).encode("utf-8-sig")
-        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("inconsistencias.csv", csv_bytes)
-        buf.seek(0)
-        st.session_state["export_inconsistencias_zip"] = buf.getvalue()
-    return st.session_state["export_inconsistencias_zip"]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RENDERIZAÇÃO
-# ══════════════════════════════════════════════════════════════════════════════
-
-def render_empty_state(available_files: list[str]) -> None:
-    st.info("Selecione a unidade, ajuste os parâmetros e clique em Processar análise.")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.subheader("Arquivos disponíveis")
-        if available_files:
-            st.dataframe(pd.DataFrame({"Arquivo": available_files}), hide_index=True, **W)
-        else:
-            st.warning("Nenhum arquivo no padrão *_data.xlsx foi encontrado.")
-    with col2:
-        st.subheader("Fluxo recomendado")
-        st.markdown(
-            "1. Escolha a unidade.\n"
-            "2. Revise os parâmetros avançados.\n"
-            "3. Clique em **Processar análise**.\n"
-            "4. Use os filtros sem reprocessar a base.\n"
-            "5. Exporte só o que precisar."
-        )
-
-
-def render_validation_error() -> None:
-    rv = st.session_state["relatorio_validacao"]
-    st.error("A estrutura da base não atende ao schema mínimo para processamento.")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Colunas encontradas", rv["total_columns"])
-    c2.metric("Obrigatórias encontradas", len(rv["required_found"]))
-    c3.metric("Obrigatórias ausentes", len(rv["required_missing"]))
-    st.subheader("Colunas obrigatórias ausentes")
-    st.dataframe(pd.DataFrame({"Coluna": rv["required_missing"]}), hide_index=True, **W)
-    sugestoes = suggest_missing_columns(st.session_state["schema_report"])
-    if sugestoes:
-        st.subheader("Ações sugeridas")
-        for s in sugestoes:
-            st.write(f"- {s}")
-
-
-def render_summary() -> None:
-    kpis = st.session_state["kpis"]
-    st.subheader("Resumo executivo")
-    a, b, c, d, e, f = st.columns(6)
-    a.metric("Linhas válidas", kpis["linhas_validas"])
-    b.metric("Clientes únicos", kpis["clientes_unicos"])
-    c.metric("Inconsistências", kpis["inconsistencias"])
-    d.metric("Expurgados", kpis["expurgados"])
-    e.metric("Anomalias", kpis["anomalias"])
-    f.metric("Mediana global", kpis["mediana_global_fmt"])
-
-
-def render_clientes() -> None:
-    medianas = st.session_state["medianas"]
-    processados = st.session_state["processados"]
-    idx = st.session_state["proc_cliente_idx"]
-
-    st.subheader("Clientes")
-    if medianas.empty:
-        st.warning("Nenhuma mediana foi calculada para os filtros atuais.")
-        return
-
-    clientes = ["Todos"] + st.session_state["lista_clientes"]
-    cliente_sel = st.selectbox("Cliente", clientes, index=0, key="tab_clientes_sel")
-
-    if cliente_sel == "Todos":
-        med_exib = medianas
-        proc_exib = processados
-    else:
-        mask_proc = idx == cliente_sel
-        med_exib = medianas[medianas["Cod_Cliente"].astype(str) == cliente_sel]
-        proc_exib = processados[mask_proc]
-
-    st.dataframe(
-        med_exib[["Cod_Cliente", "Qtd_Apontamentos", "Mediana_Tempo_Formatada", "Metodo_Aplicado"]],
-        hide_index=True, height=320, **W,
-    )
-
-    if not proc_exib.empty:
-        base_g = proc_exib.sort_values("Chegou_em")[["Chegou_em", "Tempo_Sec"]].copy()
-        base_g["Tempo_Min"] = base_g["Tempo_Sec"] / 60
-        st.line_chart(base_g.set_index("Chegou_em")["Tempo_Min"], height=260)
-
-
-def render_janelas() -> None:
-    janelas = st.session_state["janelas"]
-    janelas_resumo = st.session_state["janelas_resumo"]
-    processados = st.session_state["processados"]
-    idx = st.session_state["proc_cliente_idx"]
-
-    st.subheader("Janelas de entrega")
-
-    if janelas is None or janelas.empty:
-        st.warning("Nenhuma janela calculada.")
-        return
-
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Clientes com janela", janelas_resumo["clientes_com_janela"])
-    k2.metric("Amplitude média", f'{janelas_resumo["amplitude_media_min"]} min')
-    k3.metric("Cobertura média", f'{janelas_resumo["cobertura_media"]}%')
-    k4.metric("Período dominante", janelas_resumo["periodo_mais_comum"])
-    k5.metric("Cruzam meia-noite", janelas_resumo["clientes_meianoite"])
-
-    st.divider()
-
-    lista_janela = st.session_state["lista_clientes_janela"]
-    if not lista_janela:
-        st.info("Nenhum cliente com janela válida.")
-        return
-
-    cliente_sel = st.selectbox(
-        "Selecione o cliente (digite para buscar)",
-        options=lista_janela, index=0, key="janela_cliente_sel",
-    )
-
-    mask = idx == cliente_sel
-    df_cli = processados[mask]
-
-    if df_cli.empty:
-        st.warning(f"Nenhum registro processado para {cliente_sel}.")
-        return
-
-    ij_row = janelas[janelas["Cod_Cliente"].astype(str) == cliente_sel]
-    ij = ij_row.iloc[0] if not ij_row.empty else None
-
-    if ij is not None:
-        j1, j2, j3, j4 = st.columns(4)
-        j1.metric("Janela", f'{ij["Janela_Inicio"]} – {ij["Janela_Fim"]}')
-        j2.metric("Amplitude", f'{ij["Amplitude_Min"]} min')
-        j3.metric("Cobertura", f'{ij["Cobertura_Efetiva"]}%')
-        j4.metric("Entregas", ij["Qtd_Entregas"])
-
-    chegada_dt = pd.to_datetime(df_cli["Chegou_em"], errors="coerce")
-    data_str = chegada_dt.dt.strftime("%Y-%m-%d").values
-    hora_min = (chegada_dt.dt.hour * 60 + chegada_dt.dt.minute).values
-
-    # ── GRÁFICO 1: Horários de chegada ────────────────────────────────────
-    st.markdown("**Horários de chegada por dia**")
-
-    tick_horas = [h * 60 for h in range(0, 25, 2)]
-    layers = []
-
-    if ij is not None:
-        rect = {"mark": {"type": "rect", "opacity": 0.10, "color": "#1D9E75"}}
-        if ij["Cruza_MeiaNoite"]:
-            layers.append({**rect, "encoding": {"y": {"datum": ij["Inicio_Min"]}, "y2": {"datum": 1440}}})
-            layers.append({**rect, "encoding": {"y": {"datum": 0}, "y2": {"datum": ij["Fim_Min"]}}})
-        else:
-            layers.append({**rect, "encoding": {"y": {"datum": ij["Inicio_Min"]}, "y2": {"datum": ij["Fim_Min"]}}})
-
-    scatter_data = [{"d": d, "h": int(h)} for d, h in zip(data_str, hora_min) if pd.notna(h)]
-
-    layers.append({
-        "mark": {"type": "circle", "size": 35, "opacity": 0.75},
-        "encoding": {
-            "x": {"field": "d", "type": "ordinal", "axis": {"title": "Dia", "labelAngle": -45, "labelFontSize": 10}},
-            "y": {
-                "field": "h", "type": "quantitative",
-                "scale": {"domain": [0, 1440]},
-                "axis": {
-                    "title": "Horário", "values": tick_horas,
-                    "labelExpr": "floor(datum.value / 60) + ':' + (datum.value % 60 < 10 ? '0' : '') + (datum.value % 60)",
-                },
-            },
-            "color": {"value": "#378ADD"},
-            "tooltip": [{"field": "d", "title": "Data"}, {"field": "h", "title": "Min. do dia"}],
-        },
-    })
-
-    st.vega_lite_chart({"data": {"values": scatter_data}, "layer": layers, "height": 280, "width": "container"}, **W)
-
-    # ── GRÁFICO 2: Tempo (linha) + Volume (barra) ────────────────────────
-    st.markdown("**Tempo de entrega e volume por dia**")
-
-    tem_vol = "Vol_caixas" in df_cli.columns and df_cli["Vol_caixas"].notna().any()
-
-    df_g = df_cli.assign(_ds=data_str)
-    agg = {"Tempo_Sec": "median"}
-    if tem_vol:
-        agg["Vol_caixas"] = "sum"
-
-    df_dia = df_g.groupby("_ds").agg(agg).reset_index()
-    df_dia["Tempo_Min"] = (df_dia["Tempo_Sec"] / 60).round(1)
-
-    if not tem_vol:
-        contagem = df_g.groupby("_ds").size().reset_index(name="Qtd")
-        df_dia = df_dia.merge(contagem, on="_ds", how="left")
-
-    col_vol = "Vol_caixas" if tem_vol else "Qtd"
-    label_vol = "Volume (caixas)" if tem_vol else "Qtd entregas"
-
-    combo = df_dia[["_ds", "Tempo_Min", col_vol]].rename(columns={"_ds": "d"}).to_dict(orient="records")
-
-    st.vega_lite_chart({
-        "data": {"values": combo},
-        "resolve": {"scale": {"y": "independent"}},
-        "layer": [
-            {
-                "mark": {"type": "bar", "opacity": 0.4, "color": "#85B7EB", "cornerRadiusEnd": 2},
-                "encoding": {
-                    "x": {"field": "d", "type": "ordinal", "axis": {"title": "Dia", "labelAngle": -45, "labelFontSize": 10}},
-                    "y": {"field": col_vol, "type": "quantitative", "axis": {"title": label_vol, "titleColor": "#85B7EB"}},
-                    "tooltip": [{"field": "d", "title": "Data"}, {"field": col_vol, "title": label_vol}],
-                },
-            },
-            {
-                "mark": {"type": "line", "color": "#D85A30", "strokeWidth": 2, "point": {"size": 28, "color": "#D85A30"}},
-                "encoding": {
-                    "x": {"field": "d", "type": "ordinal"},
-                    "y": {"field": "Tempo_Min", "type": "quantitative", "axis": {"title": "Tempo (min)", "titleColor": "#D85A30"}},
-                    "tooltip": [{"field": "d", "title": "Data"}, {"field": "Tempo_Min", "title": "Tempo (min)"}],
-                },
-            },
-        ],
-        "height": 280, "width": "container",
-    }, **W)
-
-    with st.expander("Entregas do cliente", expanded=False):
-        cols = [c for c in ["Chegou_em", "Finalizada_em", "Tempo_Sec", "Vol_caixas"] if c in df_cli.columns]
-        st.dataframe(df_cli[cols], hide_index=True, height=300, **W)
-
-    csv_j = janelas.dropna(subset=["Amplitude_Min"]).to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "Baixar todas as janelas em CSV", csv_j,
-        f"{st.session_state.get('ultima_unidade', 'unidade')}_janelas.csv",
-        "text/csv", **W,
-    )
-
-
-def render_qualidade() -> None:
-    rv = st.session_state["relatorio_validacao"]
-    inconsistencias = st.session_state["inconsistencias"]
-    st.subheader("Qualidade da base")
-    x1, x2, x3 = st.columns(3)
-    x1.metric("Colunas encontradas", rv["total_columns"])
-    x2.metric("Extras não reconhecidas", len(rv["unknown_columns"]))
-    x3.metric("Linhas com inconsistência", len(inconsistencias))
-    with st.expander("Prévia da base padronizada", expanded=False):
-        st.dataframe(st.session_state["base_padronizada"].head(100), height=360, **W)
-
-
-def render_detalhes() -> None:
-    st.subheader("Detalhes operacionais")
-    subtabs = st.tabs(["Processados", "Inconsistências", "Expurgados", "Anomalias"])
-    with subtabs[0]:
-        st.dataframe(st.session_state["processados"], height=320, hide_index=True, **W)
-    with subtabs[1]:
-        st.dataframe(st.session_state["inconsistencias"], height=320, hide_index=True, **W)
-    with subtabs[2]:
-        st.dataframe(st.session_state["expurgados"], height=320, hide_index=True, **W)
-    with subtabs[3]:
-        st.dataframe(st.session_state["anomalias"], height=320, hide_index=True, **W)
-
-
-def render_exportacao() -> None:
-    unidade = st.session_state["ultima_unidade"]
-    st.subheader("Exportação")
-    c1, c2, c3 = st.columns(3)
-    with c1:
         st.download_button(
-            "Baixar Excel completo", _get_export_excel(),
-            f"{unidade}_luna_resultado.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", **W,
+            label="Baixar Excel consolidado",
+            data=excel_bytes.getvalue(),
+            file_name=f"{parametros_processados['unidade']}_luna_resultado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
-    with c2:
-        st.download_button(
-            "Baixar medianas em ZIP", _get_export_medianas_zip(),
-            f"{unidade}_medianas.zip", "application/zip", **W,
-        )
-    with c3:
-        st.download_button(
-            "Baixar inconsistências em ZIP", _get_export_inconsistencias_zip(),
-            f"{unidade}_inconsistencias.zip", "application/zip", **W,
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════════════════
-
-def main() -> None:
-    init_state()
-    st.title("Luna")
-    st.caption("Análise de tempos operacionais com foco em decisão e validação rápida.")
-
-    available_files = list_available_unit_files()
-
-    with st.sidebar:
-        st.header("Configuração")
-        with st.form("form_processamento"):
-            unidade = st.selectbox("Unidade", options=AVAILABLE_UNITS, index=0)
-            with st.expander("Parâmetros avançados", expanded=False):
-                tempo_min_expurgo = st.number_input("Tempo mínimo de expurgo (s)", min_value=1, value=300, step=1)
-                tempo_max_anomalia = st.number_input("Tempo máximo para anomalia (s)", min_value=1, value=21600, step=1)
-                eventos_previos = st.number_input("Eventos prévios", min_value=1, value=10, step=1)
-                minimo_apontamentos = st.number_input("Mínimo de apontamentos", min_value=1, value=4, step=1)
-                tempo_padrao_poucos = st.number_input("Tempo padrão poucos apontam. (s)", min_value=1, value=600, step=1)
-                ajuste_pct = st.slider("Ajuste percentual", min_value=-20, max_value=100, value=0, step=1)
-            processar = st.form_submit_button("Processar análise", use_container_width=True)
-        st.divider()
-        st.caption("Arquivos detectados")
-        if available_files:
-            st.write(available_files)
-        else:
-            st.warning("Nenhum arquivo *_data.xlsx encontrado.")
-
-    params = get_params_dict(
-        tempo_min_expurgo, tempo_max_anomalia, eventos_previos,
-        minimo_apontamentos, tempo_padrao_poucos, ajuste_pct,
-    )
-
-    if processar:
-        try:
-            processar_analise(unidade, params)
-        except Exception as exc:
-            st.error(str(exc))
-            st.stop()
-
-    rv = st.session_state.get("relatorio_validacao")
-    if rv and not rv["is_valid"]:
-        render_validation_error()
-        return
-
-    if not st.session_state.get("resultado_pronto"):
-        render_empty_state(available_files)
-        return
-
-    tab_resumo, tab_clientes, tab_janelas, tab_qualidade, tab_detalhes, tab_export = st.tabs(
-        ["Resumo", "Clientes", "Janelas", "Qualidade da base", "Detalhes", "Exportação"]
-    )
-    with tab_resumo:
-        render_summary()
-    with tab_clientes:
-        render_clientes()
-    with tab_janelas:
-        render_janelas()
-    with tab_qualidade:
-        render_qualidade()
-    with tab_detalhes:
-        render_detalhes()
-    with tab_export:
-        render_exportacao()
 
 
 if __name__ == "__main__":

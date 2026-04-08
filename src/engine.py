@@ -1,18 +1,15 @@
-from importlib.util import find_spec
 from io import BytesIO
 from pathlib import Path
-import zipfile
 
 import pandas as pd
 
 from config import EXPORT_DIR
 
 
-def excel_export_supported() -> bool:
-    return find_spec("openpyxl") is not None
-
-
 def format_seconds(value: float | int | None) -> str:
+    """
+    Converte segundos em HH:MM:SS.
+    """
     if value is None or pd.isna(value):
         return "00:00:00"
 
@@ -24,6 +21,20 @@ def format_seconds(value: float | int | None) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def format_seconds_hhmm(value: float | int | None) -> str:
+    """
+    Converte segundos em HH:MM.
+    """
+    if value is None or pd.isna(value):
+        return "00:00"
+
+    total = int(round(float(value)))
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+
+    return f"{hours:02d}:{minutes:02d}"
+
+
 def calcular_medianas_por_cliente(
     df: pd.DataFrame,
     eventos_previos: int,
@@ -31,6 +42,9 @@ def calcular_medianas_por_cliente(
     tempo_padrao_poucos_apontamentos: int,
     ajuste_percentual: float,
 ) -> pd.DataFrame:
+    """
+    Calcula mediana por cliente com regras operacionais.
+    """
     columns = [
         "Cod_Cliente",
         "Qtd_Apontamentos",
@@ -79,6 +93,94 @@ def calcular_medianas_por_cliente(
     )
 
 
+def montar_evolucao_cliente(
+    base_validos: pd.DataFrame,
+    medianas: pd.DataFrame,
+    cliente: str,
+) -> tuple[pd.DataFrame, float]:
+    """
+    Monta a evolução do tempo de um cliente específico.
+
+    Retorna:
+    - dataframe consolidado por data de chegada
+    - mediana geral do cliente
+    """
+    columns = [
+        "Data_Chegada",
+        "Tempo_Sec",
+        "Tempo_HHMM",
+        "Tempo_HHMMSS",
+        "Cod_Cliente",
+        "Tipo",
+    ]
+
+    if base_validos is None or base_validos.empty:
+        return pd.DataFrame(columns=columns), 0.0
+
+    if "Cod_Cliente" not in base_validos.columns:
+        return pd.DataFrame(columns=columns), 0.0
+
+    if "Data_Chegada" not in base_validos.columns or "Tempo_Sec" not in base_validos.columns:
+        return pd.DataFrame(columns=columns), 0.0
+
+    cliente = str(cliente).strip()
+
+    dados = base_validos.copy()
+    dados["Cod_Cliente"] = dados["Cod_Cliente"].astype(str).str.strip()
+    dados = dados[dados["Cod_Cliente"] == cliente].copy()
+
+    if dados.empty:
+        return pd.DataFrame(columns=columns), 0.0
+
+    dados["Data_Chegada"] = pd.to_datetime(dados["Data_Chegada"], errors="coerce")
+    dados["Tempo_Sec"] = pd.to_numeric(dados["Tempo_Sec"], errors="coerce")
+    dados = dados.dropna(subset=["Data_Chegada", "Tempo_Sec"]).copy()
+
+    if dados.empty:
+        return pd.DataFrame(columns=columns), 0.0
+
+    evolucao = (
+        dados.groupby("Data_Chegada", as_index=False)["Tempo_Sec"]
+        .median()
+        .sort_values("Data_Chegada")
+        .reset_index(drop=True)
+    )
+
+    mediana_cliente = 0.0
+    if medianas is not None and not medianas.empty:
+        med = medianas.copy()
+        med["Cod_Cliente"] = med["Cod_Cliente"].astype(str).str.strip()
+        linha = med.loc[med["Cod_Cliente"] == cliente, "Mediana_Tempo_Sec"]
+        if not linha.empty:
+            mediana_cliente = float(linha.iloc[0])
+
+    if mediana_cliente == 0.0 and not evolucao.empty:
+        mediana_cliente = float(evolucao["Tempo_Sec"].median())
+
+    evolucao["Tempo_HHMM"] = evolucao["Tempo_Sec"].apply(format_seconds_hhmm)
+    evolucao["Tempo_HHMMSS"] = evolucao["Tempo_Sec"].apply(format_seconds)
+    evolucao["Cod_Cliente"] = cliente
+    evolucao["Tipo"] = "Entrega"
+
+    linha_mediana = pd.DataFrame(
+        [
+            {
+                "Data_Chegada": pd.NaT,
+                "Tempo_Sec": mediana_cliente,
+                "Tempo_HHMM": format_seconds_hhmm(mediana_cliente),
+                "Tempo_HHMMSS": format_seconds(mediana_cliente),
+                "Cod_Cliente": cliente,
+                "Tipo": "Mediana",
+            }
+        ]
+    )
+
+    evolucao_final = pd.concat([evolucao, linha_mediana], ignore_index=True)
+    evolucao_final = evolucao_final[columns]
+
+    return evolucao_final, mediana_cliente
+
+
 def build_kpis(
     base_bruta: pd.DataFrame,
     base_validos: pd.DataFrame,
@@ -87,6 +189,9 @@ def build_kpis(
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
 ) -> dict:
+    """
+    Consolida KPIs principais.
+    """
     mediana_global = 0.0
     if medianas is not None and not medianas.empty:
         mediana_global = float(medianas["Mediana_Tempo_Sec"].median())
@@ -110,13 +215,11 @@ def exportar_excel(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    evolucao_cliente: pd.DataFrame | None = None,
 ) -> BytesIO:
-    if not excel_export_supported():
-        raise RuntimeError(
-            "A exportacao em Excel esta indisponivel neste ambiente porque o pacote "
-            "'openpyxl' nao esta instalado."
-        )
-
+    """
+    Gera arquivo Excel em memória.
+    """
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -127,33 +230,11 @@ def exportar_excel(
         anomalias.to_excel(writer, index=False, sheet_name="Anomalias")
         medianas.to_excel(writer, index=False, sheet_name="Medianas Cliente")
 
-    output.seek(0)
-    return output
-
-
-def exportar_zip_csv(
-    base_bruta: pd.DataFrame,
-    base_validos: pd.DataFrame,
-    inconsistencias: pd.DataFrame,
-    expurgados: pd.DataFrame,
-    anomalias: pd.DataFrame,
-    medianas: pd.DataFrame,
-) -> BytesIO:
-    output = BytesIO()
-
-    arquivos = {
-        "base_bruta.csv": base_bruta,
-        "base_validada.csv": base_validos,
-        "inconsistencias.csv": inconsistencias,
-        "expurgados.csv": expurgados,
-        "anomalias.csv": anomalias,
-        "medianas_cliente.csv": medianas,
-    }
-
-    with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        for nome_arquivo, df in arquivos.items():
-            csv_bytes = df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
-            zf.writestr(nome_arquivo, csv_bytes)
+        if evolucao_cliente is not None and not evolucao_cliente.empty:
+            export_df = evolucao_cliente.copy()
+            if "Data_Chegada" in export_df.columns:
+                export_df["Data_Chegada"] = export_df["Data_Chegada"].astype("string")
+            export_df.to_excel(writer, index=False, sheet_name="Evolucao Cliente")
 
     output.seek(0)
     return output
@@ -166,8 +247,12 @@ def salvar_excel_em_disco(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    evolucao_cliente: pd.DataFrame | None = None,
     file_name: str = "luna_resultado.xlsx",
 ) -> Path:
+    """
+    Salva o Excel consolidado no diretório exports.
+    """
     buffer = exportar_excel(
         base_bruta=base_bruta,
         base_validos=base_validos,
@@ -175,6 +260,7 @@ def salvar_excel_em_disco(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        evolucao_cliente=evolucao_cliente,
     )
 
     file_path = EXPORT_DIR / file_name
