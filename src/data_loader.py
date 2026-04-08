@@ -1,19 +1,11 @@
-from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
-import streamlit as st
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+from config import DATA_DIR
 
 
 def normalize_unit_name(unit_name: str) -> str:
-    """
-    Padroniza o nome da unidade.
-    Ex.: 'mga' -> 'MGA'
-    """
     if unit_name is None:
         raise ValueError("A unidade não foi informada.")
 
@@ -25,123 +17,100 @@ def normalize_unit_name(unit_name: str) -> str:
     return unit_name
 
 
-@st.cache_resource
-def get_drive_service():
+def get_unit_file_candidates(unit_name: str) -> list[Path]:
     """
-    Cria e reutiliza a conexão autenticada com o Google Drive.
-    """
-    if "gcp_service_account" not in st.secrets:
-        raise ValueError(
-            "Secret 'gcp_service_account' não encontrado. "
-            "Configure o arquivo .streamlit/secrets.toml."
-        )
-
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]),
-        scopes=SCOPES,
-    )
-
-    return build("drive", "v3", credentials=creds)
-
-
-def get_drive_file_id(unit_name: str) -> str:
-    """
-    Busca o file_id da unidade no bloco [drive_files] do secrets.
+    Prioriza CSV e depois XLSX.
     """
     unit_name = normalize_unit_name(unit_name)
 
-    if "drive_files" not in st.secrets:
-        raise ValueError(
-            "Secret 'drive_files' não encontrado. "
-            "Adicione o bloco [drive_files] no .streamlit/secrets.toml."
-        )
-
-    drive_files = st.secrets["drive_files"]
-
-    if unit_name not in drive_files:
-        available = ", ".join(sorted(drive_files.keys())) if drive_files else "nenhum"
-        raise FileNotFoundError(
-            f"Arquivo da unidade '{unit_name}' não foi configurado em [drive_files]. "
-            f"Unidades disponíveis: {available}"
-        )
-
-    file_id = str(drive_files[unit_name]).strip()
-
-    if not file_id:
-        raise ValueError(f"O file_id da unidade '{unit_name}' está vazio.")
-
-    return file_id
+    return [
+        DATA_DIR / f"{unit_name}_data.csv",
+        DATA_DIR / f"{unit_name}_data.xlsx",
+    ]
 
 
 def list_available_unit_files() -> list[str]:
     """
-    Lista as unidades disponíveis com base nos secrets.
+    Lista arquivos disponíveis na pasta data nos padrões:
+    - *_data.csv
+    - *_data.xlsx
     """
-    if "drive_files" not in st.secrets:
+    if not DATA_DIR.exists():
         return []
 
-    return sorted([str(key) for key in st.secrets["drive_files"].keys()])
+    files = []
+    files.extend([file.name for file in DATA_DIR.glob("*_data.csv")])
+    files.extend([file.name for file in DATA_DIR.glob("*_data.xlsx")])
+
+    return sorted(files)
 
 
-def _download_file_bytes(file_id: str) -> BytesIO:
+def read_csv_safely(file_path: Path) -> pd.DataFrame:
     """
-    Baixa o arquivo do Google Drive para memória.
+    Tenta ler CSV com combinações comuns de separador e encoding.
     """
-    service = get_drive_service()
-
-    request = service.files().get_media(fileId=file_id)
-    buffer = BytesIO()
-    downloader = MediaIoBaseDownload(buffer, request)
-
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-
-    buffer.seek(0)
-    return buffer
-
-
-def _read_csv_buffer(buffer: BytesIO) -> pd.DataFrame:
-    """
-    Lê CSV com algumas tentativas de encoding e separador.
-    """
-    tentativas = [
+    attempts = [
         {"sep": ";", "encoding": "utf-8-sig"},
         {"sep": ",", "encoding": "utf-8-sig"},
         {"sep": ";", "encoding": "latin1"},
         {"sep": ",", "encoding": "latin1"},
+        {"sep": ";", "encoding": "cp1252"},
+        {"sep": ",", "encoding": "cp1252"},
     ]
 
-    erros = []
+    last_error = None
 
-    for tentativa in tentativas:
+    for params in attempts:
         try:
-            buffer.seek(0)
-            df = pd.read_csv(
-                buffer,
-                sep=tentativa["sep"],
-                encoding=tentativa["encoding"],
-                low_memory=False,
-            )
-            if not df.empty and len(df.columns) > 1:
-                return df
+            return pd.read_csv(file_path, low_memory=False, **params)
         except Exception as exc:
-            erros.append(
-                f"sep={tentativa['sep']} | encoding={tentativa['encoding']} | erro={exc}"
-            )
+            last_error = exc
 
     raise ValueError(
-        "Não foi possível ler o CSV com as combinações testadas. "
-        + " | ".join(erros)
+        f"Erro ao ler o CSV '{file_path.name}'. "
+        f"Não foi possível interpretar o arquivo com os formatos testados. "
+        f"Último erro: {last_error}"
     )
 
 
-@st.cache_data(ttl=1800)
 def load_unit_file(unit_name: str) -> pd.DataFrame:
     """
-    Carrega o CSV da unidade a partir do Google Drive.
+    Carrega o arquivo da unidade a partir da pasta data.
+    Prioridade:
+    1. {UNIDADE}_data.csv
+    2. {UNIDADE}_data.xlsx
     """
-    unit_name = normalize_unit_name(unit_name)
-    file_id = get_drive_file_id(unit_name)
-    buffer = _download_file_bytes(file_id)
-    return _read_csv_buffer(buffer)
+    candidates = get_unit_file_candidates(unit_name)
+
+    selected_file = None
+    for file_path in candidates:
+        if file_path.exists():
+            selected_file = file_path
+            break
+
+    if selected_file is None:
+        available_files = list_available_unit_files()
+        available_text = ", ".join(available_files) if available_files else "nenhum arquivo encontrado"
+
+        expected_names = ", ".join([path.name for path in candidates])
+
+        raise FileNotFoundError(
+            f"Arquivo não encontrado para a unidade '{normalize_unit_name(unit_name)}'. "
+            f"Nomes esperados: {expected_names}. "
+            f"Pasta pesquisada: {DATA_DIR}. "
+            f"Arquivos disponíveis: {available_text}"
+        )
+
+    try:
+        if selected_file.suffix.lower() == ".csv":
+            return read_csv_safely(selected_file)
+
+        if selected_file.suffix.lower() == ".xlsx":
+            return pd.read_excel(selected_file)
+
+        raise ValueError(f"Formato não suportado: {selected_file.suffix}")
+
+    except Exception as exc:
+        raise ValueError(
+            f"Erro ao ler o arquivo '{selected_file.name}': {exc}"
+        ) from exc
