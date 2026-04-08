@@ -1,1 +1,1 @@
-"""Pacote principal dos módulos de processamento do Luna."""
+# pacote src
