@@ -33,6 +33,26 @@ from src.schema import (
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
+DIAS_SEMANA_MAP = {
+    0: "SEG",
+    1: "TER",
+    2: "QUA",
+    3: "QUI",
+    4: "SEX",
+    5: "SÁB",
+    6: "DOM",
+}
+
+OPCOES_DIA_SEMANA = [
+    "TODOS",
+    "SEG",
+    "TER",
+    "QUA",
+    "QUI",
+    "SEX",
+    "SÁB",
+]
+
 st.set_page_config(
     page_title=APP_TITLE,
     layout=LAYOUT,
@@ -396,6 +416,8 @@ def montar_dados_cliente(
     dados_cliente["Finalizada_Min"] = minutos_desde_meia_noite(dados_cliente["Finalizada_em"])
     dados_cliente["Hora_Abertura"] = dados_cliente["Chegou_Min"].apply(formatar_minutos_hhmm)
     dados_cliente["Hora_Finalizacao"] = dados_cliente["Finalizada_Min"].apply(formatar_minutos_hhmm)
+    dados_cliente["Dia_Semana_Num"] = pd.to_datetime(dados_cliente["Chegou_em"], errors="coerce").dt.dayofweek
+    dados_cliente["Dia_Semana"] = dados_cliente["Dia_Semana_Num"].map(DIAS_SEMANA_MAP).fillna("")
 
     linha_mediana = medianas[medianas["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()].copy()
 
@@ -423,6 +445,76 @@ def montar_dados_cliente(
     }
 
     return dados_cliente, resumo
+
+
+def filtrar_dados_cliente_por_dia_semana(
+    dados_cliente: pd.DataFrame,
+    dia_semana: str,
+) -> pd.DataFrame:
+    if dados_cliente is None or dados_cliente.empty:
+        return pd.DataFrame()
+
+    if not dia_semana or dia_semana == "TODOS":
+        return dados_cliente.copy().reset_index(drop=True)
+
+    return (
+        dados_cliente[dados_cliente["Dia_Semana"].astype(str).str.upper() == str(dia_semana).strip().upper()]
+        .copy()
+        .reset_index(drop=True)
+    )
+
+
+def recalcular_resumo_cliente_filtrado(
+    dados_cliente: pd.DataFrame,
+    resumo_base: dict,
+) -> dict:
+    resumo = dict(resumo_base)
+
+    if dados_cliente is None or dados_cliente.empty:
+        resumo.update(
+            {
+                "qtd_entregas": 0,
+                "media_vol_caixas": 0.0,
+                "media_vol_caixas_fmt": formatar_numero(0.0, 2),
+                "mediana_tempo_sec": 0.0,
+                "mediana_tempo_fmt": "00:00:00",
+                "qtd_nulos_origem": 0,
+                "qtd_zeros_reais": 0,
+                "qtd_invalidos_convertidos": 0,
+                "qtd_total_volume": 0,
+            }
+        )
+        return resumo
+
+    coluna_volume = resumo.get("coluna_volume", "Vol_caixas")
+    if coluna_volume in dados_cliente.columns:
+        _, resumo_volume = normalizar_volume_caixas(dados_cliente[coluna_volume])
+    else:
+        resumo_volume = {
+            "qtd_total": int(len(dados_cliente)),
+            "qtd_nulos_origem": 0,
+            "qtd_zeros_reais": 0,
+            "qtd_invalidos_convertidos": 0,
+        }
+
+    mediana_tempo_sec = float(pd.to_numeric(dados_cliente["Tempo_Sec"], errors="coerce").fillna(0).median())
+    media_vol_caixas = float(pd.to_numeric(dados_cliente["Vol_caixas_num"], errors="coerce").fillna(0).mean())
+
+    resumo.update(
+        {
+            "qtd_entregas": int(len(dados_cliente)),
+            "media_vol_caixas": media_vol_caixas,
+            "media_vol_caixas_fmt": formatar_numero(media_vol_caixas, 2),
+            "mediana_tempo_sec": mediana_tempo_sec,
+            "mediana_tempo_fmt": format_seconds(mediana_tempo_sec),
+            "qtd_nulos_origem": resumo_volume["qtd_nulos_origem"],
+            "qtd_zeros_reais": resumo_volume["qtd_zeros_reais"],
+            "qtd_invalidos_convertidos": resumo_volume["qtd_invalidos_convertidos"],
+            "qtd_total_volume": resumo_volume["qtd_total"],
+        }
+    )
+
+    return resumo
 
 
 def criar_grafico_cliente(
@@ -968,21 +1060,56 @@ def main() -> None:
                         key="mostrar_rotulos_tempo_cliente",
                     )
 
+                filtro_dia_semana = st.segmented_control(
+                    "Dia da semana",
+                    options=OPCOES_DIA_SEMANA,
+                    selection_mode="single",
+                    default=st.session_state.get("filtro_dia_semana_cliente", "TODOS"),
+                    key="filtro_dia_semana_cliente",
+                    width="stretch",
+                )
+
+                if filtro_dia_semana is None:
+                    filtro_dia_semana = "TODOS"
+
                 dados_cliente, resumo_cliente = montar_dados_cliente(
                     processados=processados,
                     medianas=medianas,
                     cliente=cliente,
                 )
 
+                dados_cliente = filtrar_dados_cliente_por_dia_semana(
+                    dados_cliente=dados_cliente,
+                    dia_semana=filtro_dia_semana,
+                )
+
+                resumo_cliente = recalcular_resumo_cliente_filtrado(
+                    dados_cliente=dados_cliente,
+                    resumo_base=resumo_cliente,
+                )
+
                 janela_cliente = pd.DataFrame()
-                if not janelas_entrega.empty:
-                    janela_cliente = janelas_entrega[
-                        janelas_entrega["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()
-                    ].copy()
+                if (
+                    st.session_state["assinatura_processamento"].get("exibir_janelas_entrega", False)
+                    and not dados_cliente.empty
+                ):
+                    janela_cliente = calcular_janelas_entrega(
+                        processados=dados_cliente,
+                        cobertura=st.session_state["assinatura_processamento"]["cobertura_janela"] / 100,
+                        usar_coluna=st.session_state["assinatura_processamento"]["base_janela"],
+                    )
+                    if not janela_cliente.empty:
+                        janela_cliente = janela_cliente[
+                            janela_cliente["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()
+                        ].copy()
 
                 if dados_cliente.empty:
-                    st.warning("Não há dados válidos para o cliente selecionado.")
+                    st.warning(
+                        f"Não há dados válidos para o cliente selecionado com o filtro de dia '{filtro_dia_semana}'."
+                    )
                 else:
+                    st.caption(f"Filtro de dia aplicado: {filtro_dia_semana}")
+
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Qtd. entregas", resumo_cliente["qtd_entregas"])
                     col2.metric("Média de Vol_caixas", resumo_cliente["media_vol_caixas_fmt"])
@@ -1016,7 +1143,7 @@ def main() -> None:
 
                         if janela_cliente.empty:
                             st.warning(
-                                "Não foi possível localizar a janela calculada para este cliente. "
+                                "Não foi possível calcular a janela para este cliente com o filtro atual. "
                                 "O gráfico abaixo será exibido somente com as aberturas/finalizações."
                             )
 
@@ -1050,6 +1177,7 @@ def main() -> None:
 
                     colunas_tabela = [
                         "DataHora_Entrega_Label",
+                        "Dia_Semana",
                         "Hora_Abertura",
                         "Hora_Finalizacao",
                         "Tempo_Formatado",
@@ -1062,6 +1190,7 @@ def main() -> None:
 
                     rename_map = {
                         "DataHora_Entrega_Label": "Data da entrega",
+                        "Dia_Semana": "Dia da semana",
                         "Hora_Abertura": "Abertura",
                         "Hora_Finalizacao": "Finalização",
                         "Tempo_Formatado": "Tempo gasto",
@@ -1074,6 +1203,7 @@ def main() -> None:
 
                     linha_resumo = {
                         "Data da entrega": "Média/Mediana",
+                        "Dia da semana": filtro_dia_semana,
                         "Abertura": "-",
                         "Finalização": "-",
                         "Tempo gasto": resumo_cliente["mediana_tempo_fmt"],
@@ -1152,7 +1282,7 @@ def main() -> None:
                         inconsistencias=inconsistencias,
                         expurgados=expurgados,
                         anomalias=anomalias,
-                        medianas=medianas,   
+                        medianas=medianas,
                     )
 
             if "excel_bytes" in st.session_state:
