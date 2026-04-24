@@ -7,6 +7,10 @@ import pandas as pd
 from config import EXPORT_DIR
 
 
+FORMATO_DATA_EXPORTACAO = "%d/%m/%Y %H:%M:%S"
+FORMATO_DATA_SIMPLES_EXPORTACAO = "%d/%m/%Y"
+
+
 def format_seconds(value: float | int | None) -> str:
     """
     Converte segundos em HH:MM:SS.
@@ -163,10 +167,36 @@ def exportar_excel(
     return output
 
 
+def _formatar_colunas_data_para_exportacao(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None:
+        return pd.DataFrame()
+
+    df_export = df.copy()
+
+    for coluna in df_export.columns:
+        serie = df_export[coluna]
+
+        if pd.api.types.is_datetime64_any_dtype(serie):
+            horas = (
+                serie.dt.hour.fillna(0).astype(int)
+                + serie.dt.minute.fillna(0).astype(int)
+                + serie.dt.second.fillna(0).astype(int)
+            )
+            somente_data = horas.eq(0)
+
+            df_export[coluna] = serie.dt.strftime(FORMATO_DATA_EXPORTACAO)
+            if somente_data.all():
+                df_export[coluna] = serie.dt.strftime(FORMATO_DATA_SIMPLES_EXPORTACAO)
+
+    return df_export
+
+
 def _df_para_csv_bytes(df: pd.DataFrame) -> bytes:
     if df is None:
         df = pd.DataFrame()
-    return df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+
+    df_export = _formatar_colunas_data_para_exportacao(df)
+    return df_export.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
 
 
 def exportar_zip_csv(
