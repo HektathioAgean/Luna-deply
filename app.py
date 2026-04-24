@@ -14,7 +14,7 @@ if str(BASE_DIR) not in sys.path:
 
 from config import APP_TITLE, AVAILABLE_UNITS, LAYOUT
 from src.data_loader import load_unit_file, list_available_unit_files
-from src.data_transformer import aplicar_regras_operacionais, transform_base
+from src.data_transformer import aplicar_regras_operacionais, parse_datetime_flexivel, transform_base
 from src.engine import (
     build_kpis,
     calcular_medianas_por_cliente,
@@ -229,7 +229,7 @@ def value_is_null(valor) -> bool:
 
 
 def minutos_desde_meia_noite(serie: pd.Series) -> pd.Series:
-    serie_dt = pd.to_datetime(serie, errors="coerce")
+    serie_dt = parse_datetime_flexivel(serie)
     return (serie_dt.dt.hour * 60) + (serie_dt.dt.minute) + (serie_dt.dt.second / 60.0)
 
 
