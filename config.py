@@ -25,6 +25,22 @@ AVAILABLE_UNITS = [
     "NP",
 ]
 
+# =========================================================
+# CONFIGURAÇÃO CENTRALIZADA DE DATAS
+# =========================================================
+# Use:
+# - "DMY" para datas no padrão dd/mm/aaaa
+# - "MDY" para datas no padrão mm/dd/aaaa
+DATE_INPUT_ORDER = "DMY"
+
+# Formato de exibição no app
+DATE_DISPLAY_FORMAT = "%d/%m/%Y"
+DATETIME_DISPLAY_FORMAT = "%d/%m/%Y %H:%M"
+
+# Formato de exportação
+DATE_EXPORT_FORMAT = "%d/%m/%Y"
+DATETIME_EXPORT_FORMAT = "%d/%m/%Y %H:%M:%S"
+
 
 def initialize_directories() -> None:
     """
