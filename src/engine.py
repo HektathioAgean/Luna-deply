@@ -4,11 +4,8 @@ import zipfile
 
 import pandas as pd
 
-from config import EXPORT_DIR
-
-
-FORMATO_DATA_EXPORTACAO = "%d/%m/%Y %H:%M:%S"
-FORMATO_DATA_SIMPLES_EXPORTACAO = "%d/%m/%Y"
+from config import DATE_EXPORT_FORMAT, DATETIME_EXPORT_FORMAT, EXPORT_DIR
+from src.data_transformer import parse_datetime_configurada
 
 
 def format_seconds(value: float | int | None) -> str:
@@ -54,7 +51,7 @@ def calcular_medianas_por_cliente(
     if dados.empty:
         return pd.DataFrame(columns=columns)
 
-    dados["Chegou_em"] = pd.to_datetime(dados["Chegou_em"], errors="coerce")
+    dados["Chegou_em"] = parse_datetime_configurada(dados["Chegou_em"])
     dados["Tempo_Sec"] = pd.to_numeric(dados["Tempo_Sec"], errors="coerce")
     dados = dados.dropna(subset=["Chegou_em", "Tempo_Sec"]).copy()
 
@@ -112,7 +109,9 @@ def build_kpis(
     """
     mediana_global = 0.0
     if medianas is not None and not medianas.empty:
-        mediana_global = float(pd.to_numeric(medianas["Mediana_Tempo_Sec"], errors="coerce").median())
+        mediana_global = float(
+            pd.to_numeric(medianas["Mediana_Tempo_Sec"], errors="coerce").median()
+        )
 
     clientes_unicos = 0
     if base_validos is not None and not base_validos.empty and "Cod_Cliente" in base_validos.columns:
@@ -182,11 +181,12 @@ def _formatar_colunas_data_para_exportacao(df: pd.DataFrame) -> pd.DataFrame:
                 + serie.dt.minute.fillna(0).astype(int)
                 + serie.dt.second.fillna(0).astype(int)
             )
+
             somente_data = horas.eq(0)
 
-            df_export[coluna] = serie.dt.strftime(FORMATO_DATA_EXPORTACAO)
+            df_export[coluna] = serie.dt.strftime(DATETIME_EXPORT_FORMAT)
             if somente_data.all():
-                df_export[coluna] = serie.dt.strftime(FORMATO_DATA_SIMPLES_EXPORTACAO)
+                df_export[coluna] = serie.dt.strftime(DATE_EXPORT_FORMAT)
 
     return df_export
 
