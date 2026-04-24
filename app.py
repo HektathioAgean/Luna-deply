@@ -12,9 +12,20 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from config import APP_TITLE, AVAILABLE_UNITS, LAYOUT
+from config import (
+    APP_TITLE,
+    AVAILABLE_UNITS,
+    DATETIME_DISPLAY_FORMAT,
+    DATE_DISPLAY_FORMAT,
+    DATE_INPUT_ORDER,
+    LAYOUT,
+)
 from src.data_loader import load_unit_file, list_available_unit_files
-from src.data_transformer import aplicar_regras_operacionais, parse_datetime_flexivel, transform_base
+from src.data_transformer import (
+    aplicar_regras_operacionais,
+    parse_datetime_configurada,
+    transform_base,
+)
 from src.engine import (
     build_kpis,
     calcular_medianas_por_cliente,
@@ -229,7 +240,7 @@ def value_is_null(valor) -> bool:
 
 
 def minutos_desde_meia_noite(serie: pd.Series) -> pd.Series:
-    serie_dt = parse_datetime_flexivel(serie)
+    serie_dt = parse_datetime_configurada(serie)
     return (serie_dt.dt.hour * 60) + (serie_dt.dt.minute) + (serie_dt.dt.second / 60.0)
 
 
@@ -392,7 +403,9 @@ def montar_dados_cliente(
     if processados is None or processados.empty:
         return pd.DataFrame(), {}
 
-    dados_cliente = processados[processados["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()].copy()
+    dados_cliente = processados[
+        processados["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()
+    ].copy()
 
     if dados_cliente.empty:
         return pd.DataFrame(), {}
@@ -404,22 +417,30 @@ def montar_dados_cliente(
         dados_cliente["Vol_caixas"] = 0.0
         coluna_volume = "Vol_caixas"
 
-    dados_cliente["Vol_caixas_num"], resumo_volume = normalizar_volume_caixas(dados_cliente[coluna_volume])
+    dados_cliente["Vol_caixas_num"], resumo_volume = normalizar_volume_caixas(
+        dados_cliente[coluna_volume]
+    )
 
     dados_cliente["Tempo_Sec"] = pd.to_numeric(dados_cliente["Tempo_Sec"], errors="coerce").fillna(0)
-    dados_cliente["Data_Entrega_Label"] = dados_cliente["Chegou_em"].dt.strftime("%d/%m/%Y")
-    dados_cliente["DataHora_Entrega_Label"] = dados_cliente["Chegou_em"].dt.strftime("%d/%m/%Y %H:%M")
+    dados_cliente["Data_Entrega_Label"] = dados_cliente["Chegou_em"].dt.strftime(DATE_DISPLAY_FORMAT)
+    dados_cliente["DataHora_Entrega_Label"] = dados_cliente["Chegou_em"].dt.strftime(
+        DATETIME_DISPLAY_FORMAT
+    )
     dados_cliente["Tempo_Formatado"] = dados_cliente["Tempo_Sec"].apply(format_seconds)
-    dados_cliente["Vol_caixas_fmt"] = dados_cliente["Vol_caixas_num"].apply(lambda x: formatar_numero(x, 2))
+    dados_cliente["Vol_caixas_fmt"] = dados_cliente["Vol_caixas_num"].apply(
+        lambda x: formatar_numero(x, 2)
+    )
     dados_cliente["Ordem_Eixo"] = list(range(1, len(dados_cliente) + 1))
     dados_cliente["Chegou_Min"] = minutos_desde_meia_noite(dados_cliente["Chegou_em"])
     dados_cliente["Finalizada_Min"] = minutos_desde_meia_noite(dados_cliente["Finalizada_em"])
     dados_cliente["Hora_Abertura"] = dados_cliente["Chegou_Min"].apply(formatar_minutos_hhmm)
     dados_cliente["Hora_Finalizacao"] = dados_cliente["Finalizada_Min"].apply(formatar_minutos_hhmm)
-    dados_cliente["Dia_Semana_Num"] = pd.to_datetime(dados_cliente["Chegou_em"], errors="coerce").dt.dayofweek
+    dados_cliente["Dia_Semana_Num"] = dados_cliente["Chegou_em"].dt.dayofweek
     dados_cliente["Dia_Semana"] = dados_cliente["Dia_Semana_Num"].map(DIAS_SEMANA_MAP).fillna("")
 
-    linha_mediana = medianas[medianas["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()].copy()
+    linha_mediana = medianas[
+        medianas["Cod_Cliente"].astype(str).str.strip() == str(cliente).strip()
+    ].copy()
 
     mediana_tempo_sec = 0.0
     mediana_tempo_fmt = "00:00:00"
@@ -458,7 +479,10 @@ def filtrar_dados_cliente_por_dia_semana(
         return dados_cliente.copy().reset_index(drop=True)
 
     return (
-        dados_cliente[dados_cliente["Dia_Semana"].astype(str).str.upper() == str(dia_semana).strip().upper()]
+        dados_cliente[
+            dados_cliente["Dia_Semana"].astype(str).str.upper()
+            == str(dia_semana).strip().upper()
+        ]
         .copy()
         .reset_index(drop=True)
     )
@@ -497,8 +521,12 @@ def recalcular_resumo_cliente_filtrado(
             "qtd_invalidos_convertidos": 0,
         }
 
-    mediana_tempo_sec = float(pd.to_numeric(dados_cliente["Tempo_Sec"], errors="coerce").fillna(0).median())
-    media_vol_caixas = float(pd.to_numeric(dados_cliente["Vol_caixas_num"], errors="coerce").fillna(0).mean())
+    mediana_tempo_sec = float(
+        pd.to_numeric(dados_cliente["Tempo_Sec"], errors="coerce").fillna(0).median()
+    )
+    media_vol_caixas = float(
+        pd.to_numeric(dados_cliente["Vol_caixas_num"], errors="coerce").fillna(0).mean()
+    )
 
     resumo.update(
         {
@@ -781,6 +809,8 @@ def main() -> None:
                 st.write(available_files)
             else:
                 st.warning("Nenhum arquivo foi configurado em [drive_files] nos secrets.")
+
+            st.caption(f"Formato configurado da base: {DATE_INPUT_ORDER}")
 
             st.header("Parâmetros")
 
