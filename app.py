@@ -158,7 +158,7 @@ def preparar_dataframe_streamlit(df: pd.DataFrame) -> pd.DataFrame:
     for coluna in exibicao.columns:
         serie = exibicao[coluna]
 
-        if pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie) or pd.api.types.is_categorical_dtype(serie):
+        if pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie) or isinstance(serie.dtype, pd.CategoricalDtype):
             exibicao[coluna] = (
                 serie.astype("string")
                 .replace({"nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
@@ -760,6 +760,7 @@ def preparar_zip_download(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
 ) -> bytes:
     return exportar_zip_csv(
         base_bruta=base_padronizada,
@@ -768,6 +769,7 @@ def preparar_zip_download(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        janelas_atendimento=janelas_atendimento,
     ).getvalue()
 
 
@@ -778,6 +780,7 @@ def preparar_excel_download(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
 ) -> bytes:
     return exportar_excel(
         base_bruta=base_padronizada,
@@ -786,6 +789,7 @@ def preparar_excel_download(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        janelas_atendimento=janelas_atendimento,
     ).getvalue()
 
 
@@ -1304,6 +1308,7 @@ def main() -> None:
                         expurgados=expurgados,
                         anomalias=anomalias,
                         medianas=medianas,
+                        janelas_atendimento=janelas_entrega,
                     )
 
             if "zip_bytes" in st.session_state:
@@ -1325,6 +1330,7 @@ def main() -> None:
                         expurgados=expurgados,
                         anomalias=anomalias,
                         medianas=medianas,
+                        janelas_atendimento=janelas_entrega,
                     )
 
             if "excel_bytes" in st.session_state:
