@@ -126,15 +126,6 @@ def build_kpis(
     }
 
 
-def _normalizar_df_exportacao(df: pd.DataFrame | None) -> pd.DataFrame:
-    """
-    Garante que a exportação nunca quebre caso o DataFrame venha None.
-    """
-    if df is None:
-        return pd.DataFrame()
-    return df.copy()
-
-
 def exportar_excel(
     base_bruta: pd.DataFrame,
     base_validos: pd.DataFrame,
@@ -145,30 +136,30 @@ def exportar_excel(
     janelas_atendimento: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
-    Gera arquivo Excel em memória com múltiplas abas.
+    Gera arquivo Excel em memória.
     """
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        _normalizar_df_exportacao(base_bruta).to_excel(
+        (base_bruta if base_bruta is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Base Bruta"
         )
-        _normalizar_df_exportacao(base_validos).to_excel(
+        (base_validos if base_validos is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Base Validada"
         )
-        _normalizar_df_exportacao(inconsistencias).to_excel(
+        (inconsistencias if inconsistencias is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Inconsistencias"
         )
-        _normalizar_df_exportacao(expurgados).to_excel(
+        (expurgados if expurgados is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Expurgados"
         )
-        _normalizar_df_exportacao(anomalias).to_excel(
+        (anomalias if anomalias is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Anomalias"
         )
-        _normalizar_df_exportacao(medianas).to_excel(
+        (medianas if medianas is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Medianas Cliente"
         )
-        _normalizar_df_exportacao(janelas_atendimento).to_excel(
+        (janelas_atendimento if janelas_atendimento is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Janelas Atendimento"
         )
 
@@ -176,7 +167,7 @@ def exportar_excel(
     return output
 
 
-def _df_para_csv_bytes(df: pd.DataFrame | None) -> bytes:
+def _df_para_csv_bytes(df: pd.DataFrame) -> bytes:
     if df is None:
         df = pd.DataFrame()
     return df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
@@ -216,7 +207,6 @@ def salvar_excel_em_disco(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
-    janelas_atendimento: pd.DataFrame | None = None,
     file_name: str = "luna_resultado.xlsx",
 ) -> Path:
     """
@@ -229,7 +219,6 @@ def salvar_excel_em_disco(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
-        janelas_atendimento=janelas_atendimento,
     )
 
     file_path = EXPORT_DIR / file_name
@@ -247,7 +236,6 @@ def salvar_zip_em_disco(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
-    janelas_atendimento: pd.DataFrame | None = None,
     file_name: str = "luna_resultado.zip",
 ) -> Path:
     """
@@ -260,7 +248,6 @@ def salvar_zip_em_disco(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
-        janelas_atendimento=janelas_atendimento,
     )
 
     file_path = EXPORT_DIR / file_name
