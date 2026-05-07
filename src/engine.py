@@ -4,8 +4,7 @@ import zipfile
 
 import pandas as pd
 
-from config import DATE_EXPORT_FORMAT, DATETIME_EXPORT_FORMAT, EXPORT_DIR
-from src.data_transformer import parse_datetime_configurada
+from config import EXPORT_DIR
 
 
 def format_seconds(value: float | int | None) -> str:
@@ -51,7 +50,7 @@ def calcular_medianas_por_cliente(
     if dados.empty:
         return pd.DataFrame(columns=columns)
 
-    dados["Chegou_em"] = parse_datetime_configurada(dados["Chegou_em"])
+    dados["Chegou_em"] = pd.to_datetime(dados["Chegou_em"], errors="coerce")
     dados["Tempo_Sec"] = pd.to_numeric(dados["Tempo_Sec"], errors="coerce")
     dados = dados.dropna(subset=["Chegou_em", "Tempo_Sec"]).copy()
 
@@ -109,9 +108,7 @@ def build_kpis(
     """
     mediana_global = 0.0
     if medianas is not None and not medianas.empty:
-        mediana_global = float(
-            pd.to_numeric(medianas["Mediana_Tempo_Sec"], errors="coerce").median()
-        )
+        mediana_global = float(pd.to_numeric(medianas["Mediana_Tempo_Sec"], errors="coerce").median())
 
     clientes_unicos = 0
     if base_validos is not None and not base_validos.empty and "Cod_Cliente" in base_validos.columns:
@@ -129,6 +126,16 @@ def build_kpis(
     }
 
 
+def _normalizar_df_exportacao(df: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Garante DataFrame válido para exportação.
+    """
+    if df is None:
+        return pd.DataFrame()
+
+    return df.copy()
+
+
 def exportar_excel(
     base_bruta: pd.DataFrame,
     base_validos: pd.DataFrame,
@@ -136,66 +143,51 @@ def exportar_excel(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
     Gera arquivo Excel em memória.
+
+    Abas geradas:
+    - Base Bruta
+    - Base Validada
+    - Inconsistencias
+    - Expurgados
+    - Anomalias
+    - Medianas Cliente
+    - Janelas Atendimento
     """
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        (base_bruta if base_bruta is not None else pd.DataFrame()).to_excel(
+        _normalizar_df_exportacao(base_bruta).to_excel(
             writer, index=False, sheet_name="Base Bruta"
         )
-        (base_validos if base_validos is not None else pd.DataFrame()).to_excel(
+        _normalizar_df_exportacao(base_validos).to_excel(
             writer, index=False, sheet_name="Base Validada"
         )
-        (inconsistencias if inconsistencias is not None else pd.DataFrame()).to_excel(
+        _normalizar_df_exportacao(inconsistencias).to_excel(
             writer, index=False, sheet_name="Inconsistencias"
         )
-        (expurgados if expurgados is not None else pd.DataFrame()).to_excel(
+        _normalizar_df_exportacao(expurgados).to_excel(
             writer, index=False, sheet_name="Expurgados"
         )
-        (anomalias if anomalias is not None else pd.DataFrame()).to_excel(
+        _normalizar_df_exportacao(anomalias).to_excel(
             writer, index=False, sheet_name="Anomalias"
         )
-        (medianas if medianas is not None else pd.DataFrame()).to_excel(
+        _normalizar_df_exportacao(medianas).to_excel(
             writer, index=False, sheet_name="Medianas Cliente"
+        )
+        _normalizar_df_exportacao(janelas_atendimento).to_excel(
+            writer, index=False, sheet_name="Janelas Atendimento"
         )
 
     output.seek(0)
     return output
 
 
-def _formatar_colunas_data_para_exportacao(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None:
-        return pd.DataFrame()
-
-    df_export = df.copy()
-
-    for coluna in df_export.columns:
-        serie = df_export[coluna]
-
-        if pd.api.types.is_datetime64_any_dtype(serie):
-            horas = (
-                serie.dt.hour.fillna(0).astype(int)
-                + serie.dt.minute.fillna(0).astype(int)
-                + serie.dt.second.fillna(0).astype(int)
-            )
-
-            somente_data = horas.eq(0)
-
-            df_export[coluna] = serie.dt.strftime(DATETIME_EXPORT_FORMAT)
-            if somente_data.all():
-                df_export[coluna] = serie.dt.strftime(DATE_EXPORT_FORMAT)
-
-    return df_export
-
-
-def _df_para_csv_bytes(df: pd.DataFrame) -> bytes:
-    if df is None:
-        df = pd.DataFrame()
-
-    df_export = _formatar_colunas_data_para_exportacao(df)
+def _df_para_csv_bytes(df: pd.DataFrame | None) -> bytes:
+    df_export = _normalizar_df_exportacao(df)
     return df_export.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
 
 
@@ -206,6 +198,7 @@ def exportar_zip_csv(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
     Gera ZIP em memória contendo os CSVs de saída.
@@ -219,6 +212,7 @@ def exportar_zip_csv(
         zf.writestr("expurgados.csv", _df_para_csv_bytes(expurgados))
         zf.writestr("anomalias.csv", _df_para_csv_bytes(anomalias))
         zf.writestr("medianas_cliente.csv", _df_para_csv_bytes(medianas))
+        zf.writestr("janelas_atendimento.csv", _df_para_csv_bytes(janelas_atendimento))
 
     output.seek(0)
     return output
@@ -231,6 +225,7 @@ def salvar_excel_em_disco(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
     file_name: str = "luna_resultado.xlsx",
 ) -> Path:
     """
@@ -243,6 +238,7 @@ def salvar_excel_em_disco(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        janelas_atendimento=janelas_atendimento,
     )
 
     file_path = EXPORT_DIR / file_name
@@ -260,6 +256,7 @@ def salvar_zip_em_disco(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
     file_name: str = "luna_resultado.zip",
 ) -> Path:
     """
@@ -272,6 +269,7 @@ def salvar_zip_em_disco(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
+        janelas_atendimento=janelas_atendimento,
     )
 
     file_path = EXPORT_DIR / file_name
