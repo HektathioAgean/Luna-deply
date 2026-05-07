@@ -1,119 +1,126 @@
+import re
+
 import numpy as np
 import pandas as pd
 
-from config import DATE_INPUT_ORDER
 
-
-FORMATOS_ISO = [
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d %H:%M",
-    "%Y-%m-%d",
-    "%Y/%m/%d %H:%M:%S",
-    "%Y/%m/%d %H:%M",
-    "%Y/%m/%d",
-]
-
-FORMATOS_DMY = [
+FORMATOS_DATA_HORA_BR = [
     "%d/%m/%Y %H:%M:%S",
     "%d/%m/%Y %H:%M",
     "%d/%m/%Y",
-    "%d-%m-%Y %H:%M:%S",
-    "%d-%m-%Y %H:%M",
-    "%d-%m-%Y",
 ]
 
-FORMATOS_MDY = [
+FORMATOS_DATA_HORA_US = [
     "%m/%d/%Y %H:%M:%S",
     "%m/%d/%Y %H:%M",
     "%m/%d/%Y",
-    "%m-%d-%Y %H:%M:%S",
-    "%m-%d-%Y %H:%M",
-    "%m-%d-%Y",
+]
+
+FORMATOS_DATA_HORA_ISO = [
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d",
 ]
 
 
-def _serie_vazia_datetime(index: pd.Index) -> pd.Series:
-    return pd.Series(pd.NaT, index=index, dtype="datetime64[ns]")
-
-
-def _normalizar_texto_datetime(serie: pd.Series) -> pd.Series:
-    serie_texto = serie.astype("string").str.strip()
-    return serie_texto.replace(
-        {
-            "": pd.NA,
-            "nan": pd.NA,
-            "NaN": pd.NA,
-            "none": pd.NA,
-            "None": pd.NA,
-            "NaT": pd.NA,
-            "<NA>": pd.NA,
-        }
-    )
-
-
-def _aplicar_formatos(
-    destino: pd.Series,
-    origem: pd.Series,
-    formatos: list[str],
-) -> pd.Series:
-    resultado = destino.copy()
-
-    for formato in formatos:
-        mask_pendente = resultado.isna() & origem.notna()
-        if not mask_pendente.any():
-            break
-
-        parsed = pd.to_datetime(
-            origem.loc[mask_pendente],
-            format=formato,
-            errors="coerce",
-        )
-        resultado.loc[mask_pendente] = parsed
-
-    return resultado
-
-
-def parse_datetime_configurada(serie: pd.Series) -> pd.Series:
+def _detectar_prioridade_data(serie: pd.Series) -> str:
     """
-    Faz o parse de datas usando a configuração central do projeto.
+    Detecta se datas com barra estão mais próximas do padrão BR ou US.
 
-    Regras:
-    - prioriza formatos ISO/YMD
-    - depois usa SOMENTE a ordem configurada em DATE_INPUT_ORDER
-    - fallback final respeita dayfirst da configuração
+    Regra:
+    - Se o primeiro bloco possuir valor > 12 em alguma linha, assume BR (dd/mm).
+    - Se o segundo bloco possuir valor > 12 em alguma linha, assume US (mm/dd).
+    - Se não houver evidência clara, usa US como padrão operacional.
+      Isso evita casos como 03/10/2026 virar 03 de outubro quando a base vem em mm/dd/yyyy.
+    """
+    amostra = serie.dropna().astype(str).str.strip().head(5000)
+
+    primeiro_maior_12 = 0
+    segundo_maior_12 = 0
+
+    padrao = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{2,4})")
+
+    for valor in amostra:
+        match = padrao.match(valor)
+        if not match:
+            continue
+
+        primeiro = int(match.group(1))
+        segundo = int(match.group(2))
+
+        if primeiro > 12:
+            primeiro_maior_12 += 1
+        if segundo > 12:
+            segundo_maior_12 += 1
+
+    if primeiro_maior_12 > segundo_maior_12:
+        return "BR"
+
+    if segundo_maior_12 > primeiro_maior_12:
+        return "US"
+
+    return "US"
+
+
+def converter_datetime_operacional(serie: pd.Series) -> pd.Series:
+    """
+    Converte datas sem depender de inferência automática do pandas/dateutil.
+
+    O objetivo é reduzir conversões ambíguas e eliminar o warning:
+    "Could not infer format... falling back to dateutil".
+
+    Prioridade:
+    1. Formatos ISO.
+    2. Formato BR ou US conforme detecção da coluna.
+    3. Formato oposto como fallback.
     """
     if serie is None:
         return pd.Series(dtype="datetime64[ns]")
 
-    if pd.api.types.is_datetime64_any_dtype(serie):
-        return pd.to_datetime(serie, errors="coerce")
+    entrada = serie.copy()
 
-    origem = _normalizar_texto_datetime(serie)
-    resultado = _serie_vazia_datetime(serie.index)
+    if pd.api.types.is_datetime64_any_dtype(entrada):
+        return pd.to_datetime(entrada, errors="coerce")
 
-    # 1) ISO / YMD primeiro
-    resultado = _aplicar_formatos(resultado, origem, FORMATOS_ISO)
+    texto = (
+        entrada.astype("string")
+        .str.strip()
+        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+    )
 
-    # 2) Formato configurado
-    ordem = str(DATE_INPUT_ORDER).strip().upper()
-    if ordem == "MDY":
-        formatos_principais = FORMATOS_MDY
-        dayfirst = False
+    resultado = pd.Series(pd.NaT, index=texto.index, dtype="datetime64[ns]")
+
+    def aplicar_formatos(formatos: list[str]) -> None:
+        nonlocal resultado
+        faltantes = resultado.isna() & texto.notna()
+
+        for formato in formatos:
+            if not faltantes.any():
+                break
+
+            convertido = pd.to_datetime(
+                texto.loc[faltantes],
+                format=formato,
+                errors="coerce",
+                cache=True,
+            )
+
+            mask_ok = convertido.notna()
+            if mask_ok.any():
+                idx_ok = convertido.index[mask_ok]
+                resultado.loc[idx_ok] = convertido.loc[idx_ok]
+
+            faltantes = resultado.isna() & texto.notna()
+
+    aplicar_formatos(FORMATOS_DATA_HORA_ISO)
+
+    prioridade = _detectar_prioridade_data(texto)
+    if prioridade == "BR":
+        aplicar_formatos(FORMATOS_DATA_HORA_BR)
+        aplicar_formatos(FORMATOS_DATA_HORA_US)
     else:
-        formatos_principais = FORMATOS_DMY
-        dayfirst = True
-
-    resultado = _aplicar_formatos(resultado, origem, formatos_principais)
-
-    # 3) Fallback final mantendo a mesma lógica
-    mask_pendente = resultado.isna() & origem.notna()
-    if mask_pendente.any():
-        fallback = pd.to_datetime(
-            origem.loc[mask_pendente],
-            errors="coerce",
-            dayfirst=dayfirst,
-        )
-        resultado.loc[mask_pendente] = fallback
+        aplicar_formatos(FORMATOS_DATA_HORA_US)
+        aplicar_formatos(FORMATOS_DATA_HORA_BR)
 
     return resultado
 
@@ -125,7 +132,7 @@ def transform_base(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     - inconsistências
 
     Regras:
-    - converte colunas datetime
+    - converte colunas datetime com formato controlado
     - trata Cod_Cliente
     - calcula Tempo_Sec
     - cria colunas derivadas
@@ -147,10 +154,22 @@ def transform_base(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     )
 
     # =========================
+    # Tratamento de identificadores opcionais
+    # =========================
+    for coluna in ["tour_display_id", "Tour", "Mapa"]:
+        if coluna in dados.columns:
+            dados[coluna] = (
+                dados[coluna]
+                .astype("string")
+                .str.strip()
+                .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+            )
+
+    # =========================
     # Conversão de datetime
     # =========================
-    dados["Chegou_em"] = parse_datetime_configurada(dados["Chegou_em"])
-    dados["Finalizada_em"] = parse_datetime_configurada(dados["Finalizada_em"])
+    dados["Chegou_em"] = converter_datetime_operacional(dados["Chegou_em"])
+    dados["Finalizada_em"] = converter_datetime_operacional(dados["Finalizada_em"])
 
     # =========================
     # Tempo em segundos
@@ -218,6 +237,8 @@ def aplicar_regras_operacionais(
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     dados = df.copy()
+
+    dados["Tempo_Sec"] = pd.to_numeric(dados["Tempo_Sec"], errors="coerce")
 
     mask_expurgados = dados["Tempo_Sec"] < tempo_min_expurgo
     mask_anomalias = dados["Tempo_Sec"] > tempo_max_anomalia
