@@ -128,11 +128,10 @@ def build_kpis(
 
 def _normalizar_df_exportacao(df: pd.DataFrame | None) -> pd.DataFrame:
     """
-    Garante DataFrame válido para exportação.
+    Garante que a exportação nunca quebre caso o DataFrame venha None.
     """
     if df is None:
         return pd.DataFrame()
-
     return df.copy()
 
 
@@ -146,16 +145,7 @@ def exportar_excel(
     janelas_atendimento: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
-    Gera arquivo Excel em memória.
-
-    Abas geradas:
-    - Base Bruta
-    - Base Validada
-    - Inconsistencias
-    - Expurgados
-    - Anomalias
-    - Medianas Cliente
-    - Janelas Atendimento
+    Gera arquivo Excel em memória com múltiplas abas.
     """
     output = BytesIO()
 
@@ -187,8 +177,9 @@ def exportar_excel(
 
 
 def _df_para_csv_bytes(df: pd.DataFrame | None) -> bytes:
-    df_export = _normalizar_df_exportacao(df)
-    return df_export.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+    if df is None:
+        df = pd.DataFrame()
+    return df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
 
 
 def exportar_zip_csv(
