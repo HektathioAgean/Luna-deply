@@ -138,6 +138,36 @@ def formatar_numero(value: float | int | None, casas: int = 2) -> str:
     return f"{float(value):,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+
+def preparar_dataframe_streamlit(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepara DataFrames para exibição no Streamlit evitando erro de serialização Arrow.
+
+    Principal correção:
+    - colunas object/string/category são convertidas para texto;
+    - isso impede conflito quando a mesma coluna tem número e "-" no resumo, como Tour.
+    """
+    if df is None:
+        return pd.DataFrame()
+
+    if isinstance(df, dict):
+        df = pd.DataFrame(df)
+
+    exibicao = df.copy()
+
+    for coluna in exibicao.columns:
+        serie = exibicao[coluna]
+
+        if pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie) or pd.api.types.is_categorical_dtype(serie):
+            exibicao[coluna] = (
+                serie.astype("string")
+                .replace({"nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+                .fillna("")
+            )
+
+    return exibicao
+
+
 def obter_coluna_volume(df: pd.DataFrame) -> str | None:
     candidatos = [
         "Vol_caixas",
@@ -718,9 +748,9 @@ def exibir_preview_df(df: pd.DataFrame, titulo: str, limite: int = 1000, height:
     total = len(df)
     if total > limite:
         st.caption(f"Exibindo {limite:,} de {total:,} linhas.".replace(",", "."))
-        st.dataframe(df.head(limite), use_container_width=True, height=height)
+        st.dataframe(preparar_dataframe_streamlit(df.head(limite)), width="stretch", height=height)
     else:
-        st.dataframe(df, use_container_width=True, height=height)
+        st.dataframe(preparar_dataframe_streamlit(df), width="stretch", height=height)
 
 
 def preparar_zip_download(
@@ -730,7 +760,6 @@ def preparar_zip_download(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
-    janelas_atendimento: pd.DataFrame | None = None,
 ) -> bytes:
     return exportar_zip_csv(
         base_bruta=base_padronizada,
@@ -739,7 +768,6 @@ def preparar_zip_download(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
-        janelas_atendimento=janelas_atendimento,
     ).getvalue()
 
 
@@ -750,7 +778,6 @@ def preparar_excel_download(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
-    janelas_atendimento: pd.DataFrame | None = None,
 ) -> bytes:
     return exportar_excel(
         base_bruta=base_padronizada,
@@ -759,7 +786,6 @@ def preparar_excel_download(
         expurgados=expurgados,
         anomalias=anomalias,
         medianas=medianas,
-        janelas_atendimento=janelas_atendimento,
     ).getvalue()
 
 
@@ -852,7 +878,7 @@ def main() -> None:
                 index=0,
             )
 
-            processar = st.form_submit_button("Processar base", use_container_width=True)
+            processar = st.form_submit_button("Processar base", width="stretch")
 
     assinatura_atual = {
         "unidade": unidade,
@@ -952,16 +978,16 @@ def main() -> None:
         with col1:
             st.markdown("### Colunas obrigatórias encontradas")
             st.dataframe(
-                {"Colunas": relatorio_validacao["required_found"]},
-                use_container_width=True,
+                preparar_dataframe_streamlit(pd.DataFrame({"Colunas": relatorio_validacao["required_found"]})),
+                width="stretch",
                 height=180,
             )
 
         with col2:
             st.markdown("### Colunas extras não reconhecidas")
             st.dataframe(
-                {"Colunas": relatorio_validacao["unknown_columns"]},
-                use_container_width=True,
+                preparar_dataframe_streamlit(pd.DataFrame({"Colunas": relatorio_validacao["unknown_columns"]})),
+                width="stretch",
                 height=180,
             )
 
@@ -978,8 +1004,8 @@ def main() -> None:
 
         st.subheader("Schema oficial")
         st.dataframe(
-            get_schema_dataframe(),
-            use_container_width=True,
+            preparar_dataframe_streamlit(get_schema_dataframe()),
+            width="stretch",
             height=260,
         )
 
@@ -1138,7 +1164,7 @@ def main() -> None:
                         resumo=resumo_cliente,
                         mostrar_rotulos_tempo=mostrar_rotulos_tempo,
                     )
-                    st.plotly_chart(grafico, use_container_width=True)
+                    st.plotly_chart(grafico, width="stretch")
 
                     if st.session_state["assinatura_processamento"].get("exibir_janelas_entrega", False):
                         st.subheader("Janela de entrega do cliente")
@@ -1156,7 +1182,7 @@ def main() -> None:
                                 janela_cliente=pd.DataFrame(),
                                 base_janela=base_janela_ativa,
                             )
-                            st.plotly_chart(grafico_aberturas, use_container_width=True)
+                            st.plotly_chart(grafico_aberturas, width="stretch")
                         else:
                             linha_janela = janela_cliente.iloc[0]
 
@@ -1177,7 +1203,7 @@ def main() -> None:
                                 janela_cliente=janela_cliente,
                                 base_janela=base_janela_ativa,
                             )
-                            st.plotly_chart(grafico_aberturas, use_container_width=True)
+                            st.plotly_chart(grafico_aberturas, width="stretch")
 
                     colunas_tabela = [
                         "DataHora_Entrega_Label",
@@ -1221,7 +1247,19 @@ def main() -> None:
                         ignore_index=True,
                     )
 
-                    st.dataframe(exibicao_cliente, use_container_width=True, height=360)
+                    if "Tour" in exibicao_cliente.columns:
+                        exibicao_cliente["Tour"] = (
+                            exibicao_cliente["Tour"]
+                            .astype("string")
+                            .replace({"nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+                            .fillna("-")
+                        )
+
+                    st.dataframe(
+                        preparar_dataframe_streamlit(exibicao_cliente),
+                        width="stretch",
+                        height=360,
+                    )
 
     with tab_resultados:
         exibir_preview_df(medianas, "Medianas por cliente", limite=1000, height=320)
@@ -1257,7 +1295,7 @@ def main() -> None:
         col1, col2 = st.columns(2)
 
         with col1:
-            if st.button("Preparar ZIP rápido (CSV)", use_container_width=True):
+            if st.button("Preparar ZIP rápido (CSV)", width="stretch"):
                 with st.spinner("Gerando ZIP com CSVs..."):
                     st.session_state["zip_bytes"] = preparar_zip_download(
                         base_padronizada=base_padronizada,
@@ -1266,7 +1304,6 @@ def main() -> None:
                         expurgados=expurgados,
                         anomalias=anomalias,
                         medianas=medianas,
-                        janelas_atendimento=janelas_entrega,
                     )
 
             if "zip_bytes" in st.session_state:
@@ -1275,11 +1312,11 @@ def main() -> None:
                     data=st.session_state["zip_bytes"],
                     file_name=f"{st.session_state.get('ultima_unidade_processada', unidade)}_luna_resultado.zip",
                     mime="application/zip",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         with col2:
-            if st.button("Preparar Excel consolidado", use_container_width=True):
+            if st.button("Preparar Excel consolidado", width="stretch"):
                 with st.spinner("Gerando Excel..."):
                     st.session_state["excel_bytes"] = preparar_excel_download(
                         base_padronizada=base_padronizada,
@@ -1288,7 +1325,6 @@ def main() -> None:
                         expurgados=expurgados,
                         anomalias=anomalias,
                         medianas=medianas,
-                        janelas_atendimento=janelas_entrega,
                     )
 
             if "excel_bytes" in st.session_state:
@@ -1297,7 +1333,7 @@ def main() -> None:
                     data=st.session_state["excel_bytes"],
                     file_name=f"{st.session_state.get('ultima_unidade_processada', unidade)}_luna_resultado.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
 
