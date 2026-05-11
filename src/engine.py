@@ -338,9 +338,20 @@ def exportar_excel(
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
     janelas_atendimento: pd.DataFrame | None = None,
+    base_detalhada: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
     Gera arquivo Excel em memoria.
+
+    Abas produzidas:
+    - Base Bruta
+    - Base Validada
+    - Base Detalhada  (processados com Mediana e Tempo Ideal Q1 por linha)
+    - Inconsistencias
+    - Expurgados
+    - Anomalias
+    - Medianas Cliente
+    - Janelas Atendimento
     """
     output = BytesIO()
 
@@ -350,6 +361,9 @@ def exportar_excel(
         )
         (base_validos if base_validos is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Base Validada"
+        )
+        (base_detalhada if base_detalhada is not None else pd.DataFrame()).to_excel(
+            writer, index=False, sheet_name="Base Detalhada"
         )
         (inconsistencias if inconsistencias is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Inconsistencias"
@@ -385,15 +399,27 @@ def exportar_zip_csv(
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
     janelas_atendimento: pd.DataFrame | None = None,
+    base_detalhada: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
     Gera ZIP em memoria contendo os CSVs de saida.
+
+    Arquivos produzidos:
+    - base_bruta.csv
+    - base_validada.csv
+    - base_detalhada.csv  (processados com Mediana e Tempo Ideal Q1 por linha)
+    - inconsistencias.csv
+    - expurgados.csv
+    - anomalias.csv
+    - medianas_cliente.csv
+    - janelas_atendimento.csv
     """
     output = BytesIO()
 
     with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("base_bruta.csv", _df_para_csv_bytes(base_bruta))
         zf.writestr("base_validada.csv", _df_para_csv_bytes(base_validos))
+        zf.writestr("base_detalhada.csv", _df_para_csv_bytes(base_detalhada))
         zf.writestr("inconsistencias.csv", _df_para_csv_bytes(inconsistencias))
         zf.writestr("expurgados.csv", _df_para_csv_bytes(expurgados))
         zf.writestr("anomalias.csv", _df_para_csv_bytes(anomalias))
