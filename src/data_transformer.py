@@ -5,15 +5,15 @@ import pandas as pd
 def transform_base(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Transforma a base bruta em:
-    - dados válidos
-    - inconsistências
+    - dados validos
+    - inconsistencias
 
     Regras:
     - converte colunas datetime
     - trata Cod_Cliente
     - calcula Tempo_Sec
     - cria colunas derivadas
-    - classifica inconsistências
+    - classifica inconsistencias
     """
     if df is None or df.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -23,15 +23,21 @@ def transform_base(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     # =========================
     # Tratamento de cliente
     # =========================
+    _valores_nulos = {"", "nan", "None", "<NA>", "none", "null"}
+
     dados["Cod_Cliente"] = (
         dados["Cod_Cliente"]
-        .astype("string")
+        .astype(str)
         .str.strip()
-        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
     )
+    dados["Cod_Cliente"] = dados["Cod_Cliente"].where(
+        ~dados["Cod_Cliente"].isin(_valores_nulos),
+        other=pd.NA,
+    )
+    dados["Cod_Cliente"] = dados["Cod_Cliente"].astype("string")
 
     # =========================
-    # Conversão de datetime
+    # Conversao de datetime
     # =========================
     dados["Chegou_em"] = pd.to_datetime(
         dados["Chegou_em"],
@@ -66,7 +72,7 @@ def transform_base(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     dados["Dia_Semana"] = dados["Chegou_em"].dt.dayofweek.astype("Int8")
 
     # =========================
-    # Regras de inconsistência
+    # Regras de inconsistencia
     # =========================
     motivo_datetime_invalido = dados["Chegou_em"].isna() | dados["Finalizada_em"].isna()
     motivo_cliente_vazio = dados["Cod_Cliente"].isna()
@@ -87,7 +93,7 @@ def transform_base(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     )
 
     # =========================
-    # Separação final
+    # Separacao final
     # =========================
     inconsistencias = dados.loc[dados["Motivo_Inconsistencia"] != ""].copy()
     dados_validos = dados.loc[dados["Motivo_Inconsistencia"] == ""].copy()
@@ -101,7 +107,7 @@ def aplicar_regras_operacionais(
     tempo_max_anomalia: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Separa a base válida em:
+    Separa a base valida em:
     - processados
     - expurgados
     - anomalias
