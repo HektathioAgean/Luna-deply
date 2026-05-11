@@ -851,6 +851,7 @@ def main() -> None:
     }
 
     if processar:
+        st.cache_data.clear()
         st.session_state["assinatura_processamento"] = assinatura_atual
         st.session_state["ultima_unidade_processada"] = unidade
         st.session_state.pop("excel_bytes", None)
@@ -1203,6 +1204,13 @@ def main() -> None:
                             st.plotly_chart(grafico_aberturas, use_container_width=True)
 
                     # ── Tabela do cliente com Mediana e Tempo ideal Q1 por linha ──
+
+                    # Garante as colunas de referencia mesmo se o cache retornou
+                    # dados sem elas (versao anterior do resultado em cache).
+                    if "Mediana_Ref" not in dados_cliente.columns:
+                        dados_cliente["Mediana_Ref"] = resumo_cliente["mediana_tempo_fmt"]
+                    if "Tempo_Ideal_Q1_Ref" not in dados_cliente.columns:
+                        dados_cliente["Tempo_Ideal_Q1_Ref"] = resumo_cliente["tempo_ideal_q1_fmt"]
 
                     colunas_tabela = [
                         "DataHora_Entrega_Label",
