@@ -124,6 +124,57 @@ def processar_base(
     }
 
 
+# ── Base detalhada: processados + referências por linha ────────────────────────
+
+@st.cache_data(show_spinner=False)
+def montar_base_detalhada(
+    processados: pd.DataFrame,
+    medianas: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Faz join de processados com as colunas de referencia de medianas por cliente.
+
+    Cada linha da base processada recebe:
+    - Mediana_Tempo_Formatada
+    - Mediana_Tempo_Sec
+    - Tempo_Ideal_Q1_Formatado
+    - Tempo_Ideal_Q1_Sec
+    - Diferenca_Mediana_Q1_Formatada
+    - Diferenca_Mediana_Q1_Percentual
+    - Metodo_Aplicado
+    - Metodo_Ideal_Aplicado
+
+    Permite analise por entrega individual com referencia do cliente ao lado.
+    """
+    if processados is None or processados.empty:
+        return pd.DataFrame()
+
+    if medianas is None or medianas.empty:
+        return processados.copy()
+
+    colunas_referencia = [
+        "Cod_Cliente",
+        "Mediana_Tempo_Sec",
+        "Mediana_Tempo_Formatada",
+        "Tempo_Ideal_Q1_Sec",
+        "Tempo_Ideal_Q1_Formatado",
+        "Diferenca_Mediana_Q1_Sec",
+        "Diferenca_Mediana_Q1_Formatada",
+        "Diferenca_Mediana_Q1_Percentual",
+        "Metodo_Aplicado",
+        "Metodo_Ideal_Aplicado",
+    ]
+
+    colunas_existentes = [c for c in colunas_referencia if c in medianas.columns]
+    medianas_ref = medianas[colunas_existentes].copy()
+    medianas_ref["Cod_Cliente"] = medianas_ref["Cod_Cliente"].astype(str).str.strip()
+
+    base = processados.copy()
+    base["Cod_Cliente"] = base["Cod_Cliente"].astype(str).str.strip()
+
+    return base.merge(medianas_ref, on="Cod_Cliente", how="left")
+
+
 # ── Tempos de referencia (recorte local do painel) ─────────────────────────────
 
 def calcular_tempos_referencia_local(serie_tempos: pd.Series) -> dict:
@@ -336,6 +387,10 @@ def montar_dados_cliente(
         qtd_outliers_boxplot = int(float(linha.get("Qtd_Outliers_Boxplot", 0) or 0))
         qtd_base_limpa_boxplot = int(float(linha.get("Qtd_Base_Limpa_Boxplot", 0) or 0))
         metodo_ideal_aplicado = str(linha.get("Metodo_Ideal_Aplicado", ""))
+
+    # Injeta referências em cada linha para uso na tabela do painel
+    dados_cliente["Mediana_Ref"] = mediana_tempo_fmt
+    dados_cliente["Tempo_Ideal_Q1_Ref"] = tempo_ideal_q1_fmt
 
     media_vol_caixas = (
         float(dados_cliente["Vol_caixas_num"].mean()) if not dados_cliente.empty else 0.0
@@ -843,6 +898,9 @@ def main() -> None:
     medianas = dados_processados["medianas"]
     kpis = dados_processados["kpis"]
 
+    # Base detalhada: join de processados com referências por cliente
+    base_detalhada = montar_base_detalhada(processados=processados, medianas=medianas)
+
     janelas_entrega = pd.DataFrame()
     if st.session_state["assinatura_processamento"].get("exibir_janelas_entrega", False):
         janelas_entrega = calcular_janelas_entrega(
@@ -1144,12 +1202,16 @@ def main() -> None:
                             )
                             st.plotly_chart(grafico_aberturas, use_container_width=True)
 
+                    # ── Tabela do cliente com Mediana e Tempo ideal Q1 por linha ──
+
                     colunas_tabela = [
                         "DataHora_Entrega_Label",
                         "Dia_Semana",
                         "Hora_Abertura",
                         "Hora_Finalizacao",
                         "Tempo_Formatado",
+                        "Mediana_Ref",
+                        "Tempo_Ideal_Q1_Ref",
                         "Vol_caixas_num",
                     ]
                     if "tour_display_id" in dados_cliente.columns:
@@ -1163,6 +1225,8 @@ def main() -> None:
                         "Hora_Abertura": "Abertura",
                         "Hora_Finalizacao": "Finalizacao",
                         "Tempo_Formatado": "Tempo gasto",
+                        "Mediana_Ref": "Mediana",
+                        "Tempo_Ideal_Q1_Ref": "Tempo ideal Q1",
                         "Vol_caixas_num": "Vol_caixas",
                     }
                     if "tour_display_id" in exibicao_cliente.columns:
@@ -1176,6 +1240,8 @@ def main() -> None:
                         "Abertura": "-",
                         "Finalizacao": "-",
                         "Tempo gasto": resumo_cliente["mediana_tempo_fmt"],
+                        "Mediana": resumo_cliente["mediana_tempo_fmt"],
+                        "Tempo ideal Q1": resumo_cliente["tempo_ideal_q1_fmt"],
                         "Vol_caixas": resumo_cliente["media_vol_caixas"],
                     }
                     linha_q1_row = {
@@ -1184,6 +1250,8 @@ def main() -> None:
                         "Abertura": "-",
                         "Finalizacao": "-",
                         "Tempo gasto": resumo_cliente["tempo_ideal_q1_fmt"],
+                        "Mediana": resumo_cliente["mediana_tempo_fmt"],
+                        "Tempo ideal Q1": resumo_cliente["tempo_ideal_q1_fmt"],
                         "Vol_caixas": resumo_cliente["media_vol_caixas"],
                     }
                     if "Tour" in exibicao_cliente.columns:
@@ -1198,11 +1266,18 @@ def main() -> None:
                     st.dataframe(
                         preparar_dataframe_streamlit(exibicao_cliente),
                         use_container_width=True,
-                        height=360,
+                        height=380,
                     )
 
     with tab_resultados:
         exibir_preview_df(medianas, "Medianas por cliente", limite=1000, height=320)
+
+        exibir_preview_df(
+            base_detalhada,
+            "Base detalhada (entregas com referencias por cliente)",
+            limite=1000,
+            height=320,
+        )
 
         if st.session_state["assinatura_processamento"].get("exibir_janelas_entrega", False):
             colunas_janela_exibir = [
@@ -1247,6 +1322,7 @@ def main() -> None:
                         anomalias=anomalias,
                         medianas=medianas,
                         janelas_atendimento=janelas_entrega,
+                        base_detalhada=base_detalhada,
                     ).getvalue()
 
             if "zip_bytes" in st.session_state:
@@ -1269,6 +1345,7 @@ def main() -> None:
                         anomalias=anomalias,
                         medianas=medianas,
                         janelas_atendimento=janelas_entrega,
+                        base_detalhada=base_detalhada,
                     ).getvalue()
 
             if "excel_bytes" in st.session_state:
