@@ -1,10 +1,32 @@
 from io import BytesIO
-from pathlib import Path
 import zipfile
 
 import pandas as pd
 
-from config import EXPORT_DIR
+
+FATOR_IQR_PADRAO = 1.5
+
+COLUNAS_MEDIANAS_CLIENTE = [
+    "Cod_Cliente",
+    "Qtd_Apontamentos",
+    "Qtd_Base_Calculo",
+    "Qtd_Base_Limpa_Boxplot",
+    "Qtd_Outliers_Boxplot",
+    "Mediana_Tempo_Sec",
+    "Mediana_Tempo_Formatada",
+    "Tempo_Ideal_Q1_Sec",
+    "Tempo_Ideal_Q1_Formatado",
+    "Diferenca_Mediana_Q1_Sec",
+    "Diferenca_Mediana_Q1_Formatada",
+    "Diferenca_Mediana_Q1_Percentual",
+    "Q1_Sec",
+    "Q3_Sec",
+    "IQR_Sec",
+    "Limite_Inferior_Boxplot_Sec",
+    "Limite_Superior_Boxplot_Sec",
+    "Metodo_Aplicado",
+    "Metodo_Ideal_Aplicado",
+]
 
 
 def format_seconds(value: float | int | None) -> str:
@@ -22,6 +44,96 @@ def format_seconds(value: float | int | None) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def aplicar_ajuste_percentual(valor: float | int | None, ajuste_percentual: float) -> int:
+    """
+    Aplica ajuste percentual sobre um tempo em segundos.
+    """
+    if valor is None or pd.isna(valor):
+        return 0
+
+    valor_float = float(valor)
+    return int(round(valor_float + (valor_float * (float(ajuste_percentual) / 100))))
+
+
+def calcular_boxplot_iqr_tempos(
+    serie: pd.Series,
+    fator_iqr: float = FATOR_IQR_PADRAO,
+) -> dict:
+    """
+    Calcula Q1, Q3, IQR e remove outliers pelo criterio classico de boxplot.
+
+    Regras:
+    - Q1 = percentil 25%
+    - Q3 = percentil 75%
+    - IQR = Q3 - Q1
+    - limite inferior = Q1 - fator_iqr * IQR
+    - limite superior = Q3 + fator_iqr * IQR
+    - outlier = valor fora do intervalo [limite inferior, limite superior]
+
+    Se IQR = 0, a serie original e mantida.
+    """
+    tempos = pd.to_numeric(serie, errors="coerce").dropna()
+
+    if tempos.empty:
+        return {
+            "q1": 0.0,
+            "q3": 0.0,
+            "iqr": 0.0,
+            "limite_inferior": 0.0,
+            "limite_superior": 0.0,
+            "tempos_limpos": tempos,
+            "qtd_base": 0,
+            "qtd_base_limpa": 0,
+            "qtd_outliers": 0,
+            "metodo": "sem_tempos_validos",
+        }
+
+    q1 = float(tempos.quantile(0.25))
+    q3 = float(tempos.quantile(0.75))
+    iqr = float(q3 - q1)
+
+    if iqr == 0:
+        return {
+            "q1": q1,
+            "q3": q3,
+            "iqr": iqr,
+            "limite_inferior": float(tempos.min()),
+            "limite_superior": float(tempos.max()),
+            "tempos_limpos": tempos,
+            "qtd_base": int(len(tempos)),
+            "qtd_base_limpa": int(len(tempos)),
+            "qtd_outliers": 0,
+            "metodo": "q1_sem_outlier_iqr_zero",
+        }
+
+    limite_inferior = q1 - (float(fator_iqr) * iqr)
+    limite_superior = q3 + (float(fator_iqr) * iqr)
+
+    mask_valido = tempos.between(limite_inferior, limite_superior, inclusive="both")
+    tempos_limpos = tempos.loc[mask_valido]
+    qtd_outliers = int((~mask_valido).sum())
+
+    if tempos_limpos.empty:
+        tempos_limpos = tempos
+        metodo = "q1_fallback_base_original_boxplot_vazio"
+        qtd_outliers = 0
+    else:
+        metodo = "q1_boxplot_iqr"
+
+    return {
+        "q1": q1,
+        "q3": q3,
+        "iqr": iqr,
+        "limite_inferior": float(limite_inferior),
+        "limite_superior": float(limite_superior),
+        "tempos_limpos": tempos_limpos,
+        "qtd_base": int(len(tempos)),
+        "qtd_base_limpa": int(len(tempos_limpos)),
+        "qtd_outliers": int(qtd_outliers),
+        "metodo": metodo,
+    }
+
+
 def calcular_medianas_por_cliente(
     df: pd.DataFrame,
     eventos_previos: int,
@@ -30,15 +142,14 @@ def calcular_medianas_por_cliente(
     ajuste_percentual: float,
 ) -> pd.DataFrame:
     """
-    Calcula mediana por cliente com regras operacionais.
+    Calcula os tempos de referencia por cliente.
+
+    Saidas principais:
+    - Mediana_Tempo_Sec: tempo realista, baseado na mediana dos eventos considerados.
+    - Tempo_Ideal_Q1_Sec: tempo ideal, baseado no 1o quartil apos limpeza por boxplot/IQR.
+    - Diferenca_Mediana_Q1_Sec: oportunidade entre tempo realista e tempo ideal.
     """
-    columns = [
-        "Cod_Cliente",
-        "Qtd_Apontamentos",
-        "Mediana_Tempo_Sec",
-        "Mediana_Tempo_Formatada",
-        "Metodo_Aplicado",
-    ]
+    columns = COLUNAS_MEDIANAS_CLIENTE
 
     if df is None or df.empty:
         return pd.DataFrame(columns=columns)
@@ -66,22 +177,83 @@ def calcular_medianas_por_cliente(
         grupo = grupo.sort_values(by="Chegou_em", ascending=False).copy()
 
         if qtd < minimo_apontamentos:
-            mediana = int(tempo_padrao_poucos_apontamentos)
+            mediana_base = int(tempo_padrao_poucos_apontamentos)
+            tempo_ideal_q1_base = int(tempo_padrao_poucos_apontamentos)
+            qtd_base_calculo = int(len(grupo))
+            qtd_base_limpa = int(len(grupo))
+            qtd_outliers = 0
+            q1 = float(tempo_padrao_poucos_apontamentos)
+            q3 = float(tempo_padrao_poucos_apontamentos)
+            iqr = 0.0
+            limite_inferior = float(tempo_padrao_poucos_apontamentos)
+            limite_superior = float(tempo_padrao_poucos_apontamentos)
             metodo = "tempo_padrao_poucos_apontamentos"
+            metodo_ideal = "tempo_padrao_poucos_apontamentos"
         else:
             base = grupo.head(eventos_previos) if qtd > eventos_previos else grupo
-            mediana = int(base["Tempo_Sec"].median()) if not base.empty else 0
-            metodo = "mediana_ultimos_n" if qtd > eventos_previos else "mediana_total"
+            tempos_base = pd.to_numeric(base["Tempo_Sec"], errors="coerce").dropna()
 
-        mediana_ajustada = int(round(mediana + (mediana * (ajuste_percentual / 100))))
+            if tempos_base.empty:
+                mediana_base = 0
+                tempo_ideal_q1_base = 0
+                qtd_base_calculo = 0
+                qtd_base_limpa = 0
+                qtd_outliers = 0
+                q1 = 0.0
+                q3 = 0.0
+                iqr = 0.0
+                limite_inferior = 0.0
+                limite_superior = 0.0
+                metodo = "sem_tempos_validos"
+                metodo_ideal = "sem_tempos_validos"
+            else:
+                estat = calcular_boxplot_iqr_tempos(tempos_base)
+                tempos_limpos = estat["tempos_limpos"]
+
+                mediana_base = int(round(float(tempos_base.median())))
+                tempo_ideal_q1_base = int(round(float(tempos_limpos.quantile(0.25))))
+
+                qtd_base_calculo = int(estat["qtd_base"])
+                qtd_base_limpa = int(estat["qtd_base_limpa"])
+                qtd_outliers = int(estat["qtd_outliers"])
+                q1 = float(estat["q1"])
+                q3 = float(estat["q3"])
+                iqr = float(estat["iqr"])
+                limite_inferior = float(estat["limite_inferior"])
+                limite_superior = float(estat["limite_superior"])
+
+                metodo = "mediana_ultimos_n" if qtd > eventos_previos else "mediana_total"
+                metodo_ideal = estat["metodo"]
+
+        mediana_ajustada = aplicar_ajuste_percentual(mediana_base, ajuste_percentual)
+        tempo_ideal_q1_ajustado = aplicar_ajuste_percentual(tempo_ideal_q1_base, ajuste_percentual)
+
+        diferenca_sec = int(max(0, mediana_ajustada - tempo_ideal_q1_ajustado))
+        diferenca_percentual = (
+            round((diferenca_sec / mediana_ajustada) * 100, 2) if mediana_ajustada > 0 else 0.0
+        )
 
         resultados.append(
             {
                 "Cod_Cliente": cliente,
                 "Qtd_Apontamentos": qtd,
+                "Qtd_Base_Calculo": qtd_base_calculo,
+                "Qtd_Base_Limpa_Boxplot": qtd_base_limpa,
+                "Qtd_Outliers_Boxplot": qtd_outliers,
                 "Mediana_Tempo_Sec": mediana_ajustada,
                 "Mediana_Tempo_Formatada": format_seconds(mediana_ajustada),
+                "Tempo_Ideal_Q1_Sec": tempo_ideal_q1_ajustado,
+                "Tempo_Ideal_Q1_Formatado": format_seconds(tempo_ideal_q1_ajustado),
+                "Diferenca_Mediana_Q1_Sec": diferenca_sec,
+                "Diferenca_Mediana_Q1_Formatada": format_seconds(diferenca_sec),
+                "Diferenca_Mediana_Q1_Percentual": diferenca_percentual,
+                "Q1_Sec": round(q1, 2),
+                "Q3_Sec": round(q3, 2),
+                "IQR_Sec": round(iqr, 2),
+                "Limite_Inferior_Boxplot_Sec": round(limite_inferior, 2),
+                "Limite_Superior_Boxplot_Sec": round(limite_superior, 2),
                 "Metodo_Aplicado": metodo,
+                "Metodo_Ideal_Aplicado": metodo_ideal,
             }
         )
 
@@ -107,11 +279,38 @@ def build_kpis(
     Consolida KPIs principais.
     """
     mediana_global = 0.0
+    tempo_ideal_q1_global = 0.0
+    gap_global = 0.0
+    outliers_boxplot = 0
+
     if medianas is not None and not medianas.empty:
-        mediana_global = float(pd.to_numeric(medianas["Mediana_Tempo_Sec"], errors="coerce").median())
+        mediana_global = float(
+            pd.to_numeric(medianas.get("Mediana_Tempo_Sec"), errors="coerce").median()
+        )
+
+        if "Tempo_Ideal_Q1_Sec" in medianas.columns:
+            tempo_ideal_q1_global = float(
+                pd.to_numeric(medianas["Tempo_Ideal_Q1_Sec"], errors="coerce").median()
+            )
+
+        if "Diferenca_Mediana_Q1_Sec" in medianas.columns:
+            gap_global = float(
+                pd.to_numeric(medianas["Diferenca_Mediana_Q1_Sec"], errors="coerce").median()
+            )
+
+        if "Qtd_Outliers_Boxplot" in medianas.columns:
+            outliers_boxplot = int(
+                pd.to_numeric(medianas["Qtd_Outliers_Boxplot"], errors="coerce")
+                .fillna(0)
+                .sum()
+            )
 
     clientes_unicos = 0
-    if base_validos is not None and not base_validos.empty and "Cod_Cliente" in base_validos.columns:
+    if (
+        base_validos is not None
+        and not base_validos.empty
+        and "Cod_Cliente" in base_validos.columns
+    ):
         clientes_unicos = int(base_validos["Cod_Cliente"].astype(str).nunique())
 
     return {
@@ -123,6 +322,11 @@ def build_kpis(
         "clientes_unicos": clientes_unicos,
         "mediana_global_seg": mediana_global,
         "mediana_global_fmt": format_seconds(mediana_global),
+        "tempo_ideal_q1_global_seg": tempo_ideal_q1_global,
+        "tempo_ideal_q1_global_fmt": format_seconds(tempo_ideal_q1_global),
+        "gap_mediana_q1_global_seg": gap_global,
+        "gap_mediana_q1_global_fmt": format_seconds(gap_global),
+        "outliers_boxplot": outliers_boxplot,
     }
 
 
@@ -133,9 +337,10 @@ def exportar_excel(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
-    Gera arquivo Excel em memória.
+    Gera arquivo Excel em memoria.
     """
     output = BytesIO()
 
@@ -158,6 +363,9 @@ def exportar_excel(
         (medianas if medianas is not None else pd.DataFrame()).to_excel(
             writer, index=False, sheet_name="Medianas Cliente"
         )
+        (janelas_atendimento if janelas_atendimento is not None else pd.DataFrame()).to_excel(
+            writer, index=False, sheet_name="Janelas Atendimento"
+        )
 
     output.seek(0)
     return output
@@ -176,9 +384,10 @@ def exportar_zip_csv(
     expurgados: pd.DataFrame,
     anomalias: pd.DataFrame,
     medianas: pd.DataFrame,
+    janelas_atendimento: pd.DataFrame | None = None,
 ) -> BytesIO:
     """
-    Gera ZIP em memória contendo os CSVs de saída.
+    Gera ZIP em memoria contendo os CSVs de saida.
     """
     output = BytesIO()
 
@@ -189,64 +398,7 @@ def exportar_zip_csv(
         zf.writestr("expurgados.csv", _df_para_csv_bytes(expurgados))
         zf.writestr("anomalias.csv", _df_para_csv_bytes(anomalias))
         zf.writestr("medianas_cliente.csv", _df_para_csv_bytes(medianas))
+        zf.writestr("janelas_atendimento.csv", _df_para_csv_bytes(janelas_atendimento))
 
     output.seek(0)
     return output
-
-
-def salvar_excel_em_disco(
-    base_bruta: pd.DataFrame,
-    base_validos: pd.DataFrame,
-    inconsistencias: pd.DataFrame,
-    expurgados: pd.DataFrame,
-    anomalias: pd.DataFrame,
-    medianas: pd.DataFrame,
-    file_name: str = "luna_resultado.xlsx",
-) -> Path:
-    """
-    Salva o Excel consolidado no diretório exports.
-    """
-    buffer = exportar_excel(
-        base_bruta=base_bruta,
-        base_validos=base_validos,
-        inconsistencias=inconsistencias,
-        expurgados=expurgados,
-        anomalias=anomalias,
-        medianas=medianas,
-    )
-
-    file_path = EXPORT_DIR / file_name
-
-    with open(file_path, "wb") as f:
-        f.write(buffer.getvalue())
-
-    return file_path
-
-
-def salvar_zip_em_disco(
-    base_bruta: pd.DataFrame,
-    base_validos: pd.DataFrame,
-    inconsistencias: pd.DataFrame,
-    expurgados: pd.DataFrame,
-    anomalias: pd.DataFrame,
-    medianas: pd.DataFrame,
-    file_name: str = "luna_resultado.zip",
-) -> Path:
-    """
-    Salva o ZIP com CSVs no diretório exports.
-    """
-    buffer = exportar_zip_csv(
-        base_bruta=base_bruta,
-        base_validos=base_validos,
-        inconsistencias=inconsistencias,
-        expurgados=expurgados,
-        anomalias=anomalias,
-        medianas=medianas,
-    )
-
-    file_path = EXPORT_DIR / file_name
-
-    with open(file_path, "wb") as f:
-        f.write(buffer.getvalue())
-
-    return file_path
