@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.schema import (
+from schema import (
     analyze_schema,
     schema_report_to_dict,
     standardize_columns,
@@ -9,14 +9,14 @@ from src.schema import (
 
 def apply_schema_standardization(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Aplica a padronização de nomes de colunas.
+    Aplica a padronizacao de nomes de colunas.
     """
     return standardize_columns(df)
 
 
 def build_validation_report(df: pd.DataFrame) -> dict:
     """
-    Gera relatório de validação da estrutura.
+    Gera relatorio de validacao da estrutura.
     """
     report = analyze_schema(df)
     return schema_report_to_dict(report)
