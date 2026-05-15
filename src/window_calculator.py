@@ -1,20 +1,20 @@
 """
 Luna — window_calculator.py
-Cálculo de janelas operacionais de entrega por cliente.
+Calculo de janelas operacionais de entrega por cliente.
 
-Regras implementadas (memória de cálculo operacional):
-  1. Pegar horários históricos do cliente (Chegou_em / Finalizada_em)
-  2. Converter para minutos do dia (08:30 → 510, 23:50 → 1430, 00:10 → 10)
-  3. Ordenar para entender concentração real
-  4. Calcular faixa de cobertura alvo (~80%, P10–P90 como referência)
-  5. Tratar cruzamento de meia-noite com leitura circular, não linear
-  6. Escolher a MENOR faixa válida que cobre o percentual desejado
+Regras implementadas (memoria de calculo operacional):
+  1. Pegar horarios historicos do cliente (Chegou_em / Finalizada_em)
+  2. Converter para minutos do dia (08:30 -> 510, 23:50 -> 1430, 00:10 -> 10)
+  3. Ordenar para entender concentracao real
+  4. Calcular faixa de cobertura alvo (~80%, P10-P90 como referencia)
+  5. Tratar cruzamento de meia-noite com leitura circular, nao linear
+  6. Escolher a MENOR faixa valida que cobre o percentual desejado
   7. Converter de volta para HH:MM
   8. Marcar atributos: Janela_Inicio, Janela_Fim, Cruza_MeiaNoite, % cobertura
 
-Integração:
+Integracao:
   - Recebe DataFrame processado pelo data_transformer (Chegou_em como datetime)
-  - Usa Hora_Chegada se disponível, senão extrai de Chegou_em
+  - Usa Hora_Chegada se disponivel, senao extrai de Chegou_em
   - Retorna DataFrame de janelas por cliente
 """
 
@@ -22,25 +22,24 @@ import pandas as pd
 import numpy as np
 from typing import Optional
 
-# ── Constantes ────────────────────────────────────────────────────────────────
+# -- Constantes ----------------------------------------------------------------
 
 MINUTOS_DIA = 1440
 
 PERIODOS_DIA = [
-    ("Madrugada",  0,  5),
-    ("Manhã",      6, 11),
-    ("Tarde",     12, 17),
-    ("Noite",     18, 23),
+    ("Diurno",     7, 11),
+    ("Vespertino", 12, 16),
+    ("Noturno",    17, 23),
 ]
 
-DEFAULT_COBERTURA_ALVO = 0.80  # 80% das entregas
+DEFAULT_COBERTURA_ALVO = 0.80
 DEFAULT_MIN_ENTREGAS = 3
 
 
-# ── Conversões ────────────────────────────────────────────────────────────────
+# -- Conversoes ----------------------------------------------------------------
 
 def _ts_para_minutos(ts: pd.Timestamp) -> float:
-    """Converte componente horário de timestamp em minutos desde meia-noite."""
+    """Converte componente horario de timestamp em minutos desde meia-noite."""
     return ts.hour * 60 + ts.minute + ts.second / 60
 
 
@@ -51,14 +50,19 @@ def _minutos_para_hhmm(minutos: float) -> str:
 
 
 def _classificar_periodo(hora: int) -> str:
-    """Retorna o período do dia para uma hora (0-23)."""
+    """Retorna o periodo do dia para uma hora (0-23)."""
     for nome, h_ini, h_fim in PERIODOS_DIA:
         if h_ini <= hora <= h_fim:
             return nome
-    return "Indefinido"
+    return "Noturno"
 
 
-# ── Núcleo: menor janela circular ─────────────────────────────────────────────
+def _classificar_comercial(hora: int) -> bool:
+    """Retorna True se a hora esta dentro do horario comercial (07:00 a 17:59)."""
+    return 7 <= hora <= 17
+
+
+# -- Nucleo: menor janela circular ---------------------------------------------
 
 def _menor_janela_circular(
     minutos_ordenados: np.ndarray,
@@ -67,29 +71,28 @@ def _menor_janela_circular(
     """
     Encontra a menor faixa circular que cobre >= cobertura_alvo das entregas.
 
-    Lógica:
-      - Os horários são tratados como pontos num relógio de 1440 minutos.
-      - Para cada possível ponto de início (= cada horário registrado),
-        avança circularmente até cobrir o número mínimo de pontos.
-      - Mede a amplitude (distância circular) dessa janela.
+    Logica:
+      - Os horarios sao tratados como pontos num relogio de 1440 minutos.
+      - Para cada possivel ponto de inicio (= cada horario registrado),
+        avanca circularmente ate cobrir o numero minimo de pontos.
+      - Mede a amplitude (distancia circular) dessa janela.
       - Retorna a janela de menor amplitude entre todas as candidatas.
 
-    Parâmetros
+    Parametros
     ----------
     minutos_ordenados : np.ndarray
-        Array de minutos (0–1439), já ordenado.
+        Array de minutos (0-1439), ja ordenado.
     cobertura_alvo : float
-        Fração de entregas que a janela deve cobrir (ex: 0.80).
+        Fracao de entregas que a janela deve cobrir (ex: 0.80).
 
     Retorna
     -------
     dict com: inicio, fim, amplitude, cobertura, cruza_meianoite
     """
     n = len(minutos_ordenados)
-    k = max(1, int(np.ceil(n * cobertura_alvo)))  # mínimo de pontos a cobrir
+    k = max(1, int(np.ceil(n * cobertura_alvo)))
 
     if k >= n:
-        # Precisa cobrir tudo — testar linear vs circular inversa
         inicio = minutos_ordenados[0]
         fim = minutos_ordenados[-1]
         amp_linear = fim - inicio
@@ -113,18 +116,15 @@ def _menor_janela_circular(
     melhor = None
 
     for i in range(n):
-        # Janela: do ponto i ao ponto (i + k - 1), circular
         j = (i + k - 1) % n
 
         p_inicio = minutos_ordenados[i]
         p_fim = minutos_ordenados[j]
 
         if j >= i:
-            # Sem wrap — janela linear
             amplitude = p_fim - p_inicio
             cruza = False
         else:
-            # Com wrap — cruza meia-noite
             amplitude = (MINUTOS_DIA - p_inicio) + p_fim
             cruza = True
 
@@ -140,11 +140,11 @@ def _menor_janela_circular(
     return melhor
 
 
-# ── Horário de pico ───────────────────────────────────────────────────────────
+# -- Horario de pico -----------------------------------------------------------
 
 def _calcular_pico(minutos: np.ndarray, faixa_min: int = 30) -> float:
     """
-    Calcula horário de pico como centro da faixa de 30min mais frequente.
+    Calcula horario de pico como centro da faixa de 30min mais frequente.
     """
     faixas = (minutos // faixa_min).astype(int)
     moda = pd.Series(faixas).mode()
@@ -153,7 +153,7 @@ def _calcular_pico(minutos: np.ndarray, faixa_min: int = 30) -> float:
     return float(np.median(minutos))
 
 
-# ── Função principal ──────────────────────────────────────────────────────────
+# -- Funcao principal ----------------------------------------------------------
 
 def calcular_janelas(
     df: pd.DataFrame,
@@ -166,39 +166,38 @@ def calcular_janelas(
     """
     Calcula a janela operacional de entrega para cada cliente.
 
-    Usa lógica circular: testa todas as janelas possíveis que cobrem
+    Usa logica circular: testa todas as janelas possiveis que cobrem
     >= cobertura_alvo das entregas e escolhe a de menor amplitude.
 
-    Parâmetros
+    Parametros
     ----------
     df : DataFrame
         Base processada pelo data_transformer.
     col_cliente : str
-        Coluna de código do cliente.
+        Coluna de codigo do cliente.
     col_chegada : str
         Coluna de datetime de chegada.
     col_hora_chegada : str, optional
-        Coluna de hora já extraída pelo data_transformer (Hora_Chegada).
-        Se presente, usa direto. Senão, extrai de col_chegada.
+        Coluna de hora ja extraida pelo data_transformer (Hora_Chegada).
+        Se presente, usa direto. Senao, extrai de col_chegada.
     cobertura_alvo : float
-        Fração de cobertura desejada (padrão 0.80 = 80%).
+        Fracao de cobertura desejada (padrao 0.80 = 80%).
     min_entregas : int
-        Mínimo de entregas para calcular janela.
+        Minimo de entregas para calcular janela.
 
     Retorna
     -------
     DataFrame com colunas:
         Cod_Cliente, Qtd_Entregas, Janela_Inicio, Janela_Fim,
-        Amplitude_Min, Horario_Pico, Periodo_Pico,
+        Amplitude_Min, Horario_Pico, Periodo_Pico, Comercial,
         Cobertura_Efetiva, Cruza_MeiaNoite,
-        Inicio_Min, Fim_Min  (float, para gráficos)
+        Inicio_Min, Fim_Min  (float, para graficos)
     """
     if col_cliente not in df.columns:
-        raise ValueError(f"Coluna '{col_cliente}' não encontrada no DataFrame.")
+        raise ValueError(f"Coluna '{col_cliente}' nao encontrada no DataFrame.")
     if col_chegada not in df.columns:
-        raise ValueError(f"Coluna '{col_chegada}' não encontrada no DataFrame.")
+        raise ValueError(f"Coluna '{col_chegada}' nao encontrada no DataFrame.")
 
-    # Montar coluna de minutos
     df_work = df[[col_cliente]].copy()
 
     if col_hora_chegada and col_hora_chegada in df.columns:
@@ -206,14 +205,13 @@ def calcular_janelas(
         try:
             df_work["_minutos"] = hc.apply(
                 lambda x: x.hour * 60 + x.minute + x.second / 60
-                if hasattr(x, 'hour') else np.nan
+                if hasattr(x, "hour") else np.nan
             )
         except Exception:
             df_work["_minutos"] = np.nan
     else:
         df_work["_minutos"] = np.nan
 
-    # Fallback: extrair de Chegou_em
     mask_vazio = df_work["_minutos"].isna()
     if mask_vazio.any():
         chegadas = pd.to_datetime(df.loc[mask_vazio.index, col_chegada], errors="coerce")
@@ -233,10 +231,8 @@ def calcular_janelas(
             resultados.append(_registro_insuficiente(cliente, n))
             continue
 
-        # Menor janela circular
         janela = _menor_janela_circular(minutos, cobertura_alvo)
 
-        # Horário de pico
         pico = _calcular_pico(minutos)
         hora_pico = int(pico // 60) % 24
 
@@ -248,6 +244,7 @@ def calcular_janelas(
             "Amplitude_Min": int(round(janela["amplitude"])),
             "Horario_Pico": _minutos_para_hhmm(pico),
             "Periodo_Pico": _classificar_periodo(hora_pico),
+            "Comercial": _classificar_comercial(hora_pico),
             "Cobertura_Efetiva": round(janela["cobertura"] * 100, 1),
             "Cruza_MeiaNoite": janela["cruza_meianoite"],
             "Inicio_Min": round(janela["inicio"], 1),
@@ -272,6 +269,7 @@ def _registro_insuficiente(cliente, n: int) -> dict:
         "Amplitude_Min": None,
         "Horario_Pico": "—",
         "Periodo_Pico": "—",
+        "Comercial": None,
         "Cobertura_Efetiva": None,
         "Cruza_MeiaNoite": False,
         "Inicio_Min": None,
@@ -279,7 +277,7 @@ def _registro_insuficiente(cliente, n: int) -> dict:
     }
 
 
-# ── Métricas agregadas ────────────────────────────────────────────────────────
+# -- Metricas agregadas --------------------------------------------------------
 
 def resumo_janelas(df_janelas: pd.DataFrame) -> dict:
     """KPIs agregados das janelas calculadas."""
@@ -294,6 +292,7 @@ def resumo_janelas(df_janelas: pd.DataFrame) -> dict:
             "amplitude_mediana_min": 0,
             "cobertura_media": 0,
             "periodo_mais_comum": "—",
+            "clientes_comercial": 0,
             "clientes_meianoite": 0,
             "menor_janela_min": 0,
             "maior_janela_min": 0,
@@ -309,16 +308,17 @@ def resumo_janelas(df_janelas: pd.DataFrame) -> dict:
         "amplitude_mediana_min": int(round(validos["Amplitude_Min"].median())),
         "cobertura_media": round(validos["Cobertura_Efetiva"].mean(), 1),
         "periodo_mais_comum": periodos.index[0] if len(periodos) > 0 else "—",
+        "clientes_comercial": int(validos["Comercial"].sum()),
         "clientes_meianoite": int(validos["Cruza_MeiaNoite"].sum()),
         "menor_janela_min": int(validos["Amplitude_Min"].min()),
         "maior_janela_min": int(validos["Amplitude_Min"].max()),
     }
 
 
-# ── Dados para gráfico ───────────────────────────────────────────────────────
+# -- Dados para grafico --------------------------------------------------------
 
 def preparar_dados_grafico(df_janelas: pd.DataFrame, top_n: int = 40) -> list[dict]:
-    """Prepara lista de dicts para renderização no gráfico de janelas."""
+    """Prepara lista de dicts para renderizacao no grafico de janelas."""
     validos = df_janelas.dropna(subset=["Inicio_Min", "Fim_Min"]).head(top_n)
 
     dados = []
@@ -330,8 +330,9 @@ def preparar_dados_grafico(df_janelas: pd.DataFrame, top_n: int = 40) -> list[di
             "amplitude": row["Amplitude_Min"],
             "cobertura": row["Cobertura_Efetiva"],
             "periodo": row["Periodo_Pico"],
+            "comercial": row["Comercial"],
             "pico_str": row["Horario_Pico"],
-            "janela_str": f'{row["Janela_Inicio"]} – {row["Janela_Fim"]}',
+            "janela_str": f'{row["Janela_Inicio"]} - {row["Janela_Fim"]}',
             "cruza_meianoite": row["Cruza_MeiaNoite"],
         })
 
