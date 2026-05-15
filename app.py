@@ -33,6 +33,7 @@ from src.utils import (
     DIAS_SEMANA_MAP,
     OPCOES_DIA_SEMANA,
     calcular_janela_circular_minima,
+    classificar_comercial,
     classificar_periodo,
     formatar_minutos_hhmm,
     formatar_numero,
@@ -50,7 +51,7 @@ st.set_page_config(
 )
 
 
-# ── Pipeline principal ─────────────────────────────────────────────────────────
+# -- Pipeline principal --------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
 def processar_base(
@@ -124,7 +125,7 @@ def processar_base(
     }
 
 
-# ── Base detalhada: processados + referências por linha ────────────────────────
+# -- Base detalhada: processados + referencias por linha ----------------------
 
 @st.cache_data(show_spinner=False)
 def montar_base_detalhada(
@@ -175,7 +176,7 @@ def montar_base_detalhada(
     return base.merge(medianas_ref, on="Cod_Cliente", how="left")
 
 
-# ── Tempos de referencia (recorte local do painel) ─────────────────────────────
+# -- Tempos de referencia (recorte local do painel) ----------------------------
 
 def calcular_tempos_referencia_local(serie_tempos: pd.Series) -> dict:
     """
@@ -220,7 +221,7 @@ def calcular_tempos_referencia_local(serie_tempos: pd.Series) -> dict:
     }
 
 
-# ── Janelas de entrega ─────────────────────────────────────────────────────────
+# -- Janelas de entrega --------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
 def calcular_janelas_entrega(
@@ -267,6 +268,7 @@ def calcular_janelas_entrega(
                 "Cobertura_Real_Valor": float(janela["cobertura_real"]),
                 "Cruza_MeiaNoite": "Sim" if janela["cruza_meia_noite"] else "Nao",
                 "Periodo_Predominante": classificar_periodo(media_minutos),
+                "Comercial": classificar_comercial(media_minutos),
                 "Base_Janela": usar_coluna,
             }
         )
@@ -281,7 +283,7 @@ def calcular_janelas_entrega(
     )
 
 
-# ── Dados do cliente ───────────────────────────────────────────────────────────
+# -- Dados do cliente ----------------------------------------------------------
 
 def obter_coluna_volume(df: pd.DataFrame) -> str | None:
     candidatos = [
@@ -388,7 +390,6 @@ def montar_dados_cliente(
         qtd_base_limpa_boxplot = int(float(linha.get("Qtd_Base_Limpa_Boxplot", 0) or 0))
         metodo_ideal_aplicado = str(linha.get("Metodo_Ideal_Aplicado", ""))
 
-    # Injeta referências em cada linha para uso na tabela do painel
     dados_cliente["Mediana_Ref"] = mediana_tempo_fmt
     dados_cliente["Tempo_Ideal_Q1_Ref"] = tempo_ideal_q1_fmt
 
@@ -513,7 +514,7 @@ def recalcular_resumo_cliente_filtrado(
     return resumo
 
 
-# ── Graficos ───────────────────────────────────────────────────────────────────
+# -- Graficos ------------------------------------------------------------------
 
 def criar_grafico_cliente(
     dados_cliente: pd.DataFrame,
@@ -714,7 +715,7 @@ def criar_grafico_aberturas_cliente(
     return fig
 
 
-# ── Helpers de exibicao ────────────────────────────────────────────────────────
+# -- Helpers de exibicao -------------------------------------------------------
 
 def exibir_preview_df(
     df: pd.DataFrame,
@@ -744,7 +745,7 @@ def exibir_preview_df(
         )
 
 
-# ── Interface principal ────────────────────────────────────────────────────────
+# -- Interface principal -------------------------------------------------------
 
 def main() -> None:
     st.title("Luna")
@@ -899,7 +900,6 @@ def main() -> None:
     medianas = dados_processados["medianas"]
     kpis = dados_processados["kpis"]
 
-    # Base detalhada: join de processados com referências por cliente
     base_detalhada = montar_base_detalhada(processados=processados, medianas=medianas)
 
     janelas_entrega = pd.DataFrame()
@@ -1181,7 +1181,7 @@ def main() -> None:
                         else:
                             linha_janela = janela_cliente.iloc[0]
 
-                            cj1, cj2, cj3, cj4, cj5 = st.columns(5)
+                            cj1, cj2, cj3, cj4, cj5, cj6 = st.columns(6)
                             cj1.metric("Inicio da janela", linha_janela["Janela_Inicio"])
                             cj2.metric("Fim da janela", linha_janela["Janela_Fim"])
                             cj3.metric(
@@ -1190,10 +1190,12 @@ def main() -> None:
                             )
                             cj4.metric("Cobertura real", linha_janela["Cobertura_Real"])
                             cj5.metric("Cruza meia-noite", linha_janela["Cruza_MeiaNoite"])
+                            cj6.metric("Comercial", linha_janela["Comercial"])
 
                             st.caption(
                                 f"Base utilizada: {linha_janela['Base_Janela']} | "
-                                f"Periodo predominante: {linha_janela['Periodo_Predominante']}"
+                                f"Periodo predominante: {linha_janela['Periodo_Predominante']} | "
+                                f"Comercial: {linha_janela['Comercial']}"
                             )
 
                             grafico_aberturas = criar_grafico_aberturas_cliente(
@@ -1203,10 +1205,6 @@ def main() -> None:
                             )
                             st.plotly_chart(grafico_aberturas, use_container_width=True)
 
-                    # ── Tabela do cliente com Mediana e Tempo ideal Q1 por linha ──
-
-                    # Garante as colunas de referencia mesmo se o cache retornou
-                    # dados sem elas (versao anterior do resultado em cache).
                     if "Mediana_Ref" not in dados_cliente.columns:
                         dados_cliente["Mediana_Ref"] = resumo_cliente["mediana_tempo_fmt"]
                     if "Tempo_Ideal_Q1_Ref" not in dados_cliente.columns:
@@ -1298,6 +1296,7 @@ def main() -> None:
                 "Cobertura_Real",
                 "Cruza_MeiaNoite",
                 "Periodo_Predominante",
+                "Comercial",
                 "Base_Janela",
             ]
             exibir_preview_df(
