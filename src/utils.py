@@ -19,7 +19,7 @@ DIAS_SEMANA_MAP = {
 OPCOES_DIA_SEMANA = ["TODOS", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"]
 
 
-# ── Formatacao ─────────────────────────────────────────────────────────────────
+# -- Formatacao ----------------------------------------------------------------
 
 def formatar_numero(value: float | int | None, casas: int = 2) -> str:
     if value is None or pd.isna(value):
@@ -36,7 +36,7 @@ def formatar_minutos_hhmm(valor: float | int | None) -> str:
     return f"{horas:02d}:{minutos:02d}"
 
 
-# ── Tempo e periodo ────────────────────────────────────────────────────────────
+# -- Tempo e periodo -----------------------------------------------------------
 
 def minutos_desde_meia_noite(serie: pd.Series) -> pd.Series:
     """Converte serie de datetime para minutos desde meia-noite."""
@@ -45,18 +45,39 @@ def minutos_desde_meia_noite(serie: pd.Series) -> pd.Series:
 
 
 def classificar_periodo(hora_media: float | int | None) -> str:
-    """Classifica o periodo do dia a partir de minutos desde meia-noite."""
+    """
+    Classifica o periodo do dia a partir de minutos desde meia-noite.
+
+    Regras:
+      07:00 a 11:59 -> Diurno
+      12:00 a 16:59 -> Vespertino
+      17:00 a 06:59 -> Noturno
+    """
     if hora_media is None or (isinstance(hora_media, float) and math.isnan(hora_media)):
         return ""
     hora = (float(hora_media) % MINUTOS_DIA) / 60
-    if 7 <= hora < 15:
+    if 7 <= hora < 12:
         return "Diurno"
-    if 15 <= hora < 21:
+    if 12 <= hora < 17:
         return "Vespertino"
     return "Noturno"
 
 
-# ── Janela circular ────────────────────────────────────────────────────────────
+def classificar_comercial(hora_media: float | int | None) -> str:
+    """
+    Indica se o horario esta dentro do horario comercial.
+
+    Regra:
+      07:00 a 17:59 -> Sim
+      Demais horarios -> Nao
+    """
+    if hora_media is None or (isinstance(hora_media, float) and math.isnan(hora_media)):
+        return ""
+    hora = (float(hora_media) % MINUTOS_DIA) / 60
+    return "Sim" if 7 <= hora < 18 else "Nao"
+
+
+# -- Janela circular -----------------------------------------------------------
 
 def calcular_janela_circular_minima(
     minutos: list[float],
@@ -130,7 +151,7 @@ def calcular_janela_circular_minima(
     }
 
 
-# ── Volume de caixas ───────────────────────────────────────────────────────────
+# -- Volume de caixas ----------------------------------------------------------
 
 def normalizar_numero_texto(value) -> float | None:
     if pd.isna(value):
@@ -195,7 +216,7 @@ def normalizar_volume_caixas(serie: pd.Series) -> tuple[pd.Series, dict]:
     return serie_numerica.fillna(0.0), resumo_validacao
 
 
-# ── Streamlit ──────────────────────────────────────────────────────────────────
+# -- Streamlit -----------------------------------------------------------------
 
 def preparar_dataframe_streamlit(df: pd.DataFrame) -> pd.DataFrame:
     """
